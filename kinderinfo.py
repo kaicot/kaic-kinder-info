@@ -25,7 +25,7 @@ import urllib.request
 from datetime import datetime, timedelta
 from pathlib import Path
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.stderr.reconfigure(encoding="utf-8", errors="replace")
@@ -984,6 +984,127 @@ def cmd_compare(args):
           "교직원 수·급식 항목은 현재 공시 점검 중이면 표시되지 않을 수 있습니다.")
 
 
+# ----------------------------------------------------------- cmd: schedule
+def load_neis():
+    """NEIS 모듈을 지연 로드한다. 없어도 다른 기능은 멀쩡히 돌아야 한다."""
+    try:
+        import neis
+    except ImportError:
+        sys.exit("[오류] neis.py 를 찾을 수 없습니다. 저장소에서 함께 받아주세요.")
+    return neis
+
+
+def school_schedule(kinder, year=None, quiet=False):
+    """병설유치원의 모초등학교 학사일정. (학교정보, 방학목록, 행사목록, 학년도)"""
+    neis = load_neis()
+    key = get_setting("NEIS_API_KEY")
+    school = neis.find_school(key, kinder.get("kindername"),
+                              kinder.get("_sido"), kinder.get("addr"))
+    if not school:
+        return None, [], [], None
+    year = year or neis.current_school_year()
+    frm, to = neis.school_year_range(year)
+    rows = neis.fetch_schedule(key, school["ATPT_OFCDC_SC_CODE"],
+                               school["SD_SCHUL_CODE"], frm, to)
+    if not quiet:
+        print(f"  [NEIS] {school['SCHUL_NM']} {year}학년도 일정 {len(rows)}건",
+              file=sys.stderr)
+    return school, neis.vacation_periods(rows), neis.key_events(rows), year
+
+
+def cmd_schedule(args):
+    neis = load_neis()
+    regions = resolve_region(args.region)
+    b = find_kinder(regions, args.name, fresh=args.fresh)
+
+    if not neis.school_name_of(b.get("kindername")):
+        print(f"# {b['kindername']}")
+        print()
+        print("이 유치원은 **초등학교 병설이 아닙니다.** NEIS에는 초·중·고만 있고 "
+              "사립·단설 유치원의 학사일정은 공시되지 않습니다.")
+        print(f"\n공시 기준 정규 수업일수: "
+              f"{attendance_note(rows_for_kinder('lessonDay', b)[0] if rows_for_kinder('lessonDay', b) else None, b)}")
+        print("\n방학 일정은 유치원에 직접 문의하셔야 합니다"
+              + (f" (전화 {b.get('telno')})" if b.get("telno") else "") + ".")
+        return
+
+    try:
+        school, vacs, events, year = school_schedule(b, year=args.year)
+    except neis.NeisKeyMissing as e:
+        sys.exit(f"[오류] {e}")
+    except neis.NeisError as e:
+        sys.exit(f"[오류] {e}")
+
+    if not school:
+        sys.exit(f"[오류] '{b['kindername']}'의 모초등학교를 NEIS에서 찾지 못했습니다. "
+                 f"학교명이 특이하거나 통폐합된 경우일 수 있습니다.")
+
+    if args.json:
+        print(json.dumps({
+            "kindergarten": b["kindername"], "school": school, "year": year,
+            "vacations": [{"name": n, "start": s.isoformat(),
+                           "end": e.isoformat(), "days": d} for n, s, e, d in vacs],
+            "events": [{"date": d.isoformat(), "name": n} for d, n in events],
+        }, ensure_ascii=False, indent=1))
+        return
+
+    print(f"# {b['kindername']} — 방학·학사일정")
+    print(f"모초등학교: {school['SCHUL_NM']} ({school.get('ORG_RDNMA', '').strip()})")
+    print(f"{year}학년도 기준")
+    print()
+
+    if vacs:
+        print("## 방학")
+        total = 0
+        for name, start, end, days in vacs:
+            total += days
+            span = (f"{start:%Y-%m-%d} ~ {end:%Y-%m-%d}" if days > 1
+                    else f"{start:%Y-%m-%d}")
+            print(f"- **{name}**: {span} ({days}일)")
+        print(f"\n→ 방학 합계 **{total}일**")
+    else:
+        print("## 방학\n- (해당 학년도 방학 일정이 아직 공시되지 않았습니다)")
+    print()
+
+    if events:
+        print("## 주요 행사")
+        for d, name in events:
+            print(f"- {d:%Y-%m-%d} {name}")
+        print()
+
+    try:
+        lsn = rows_for_kinder("lessonDay", b)
+        note = attendance_note(lsn[0] if lsn else None, b)
+    except ApiError:
+        note = None
+    print("## 함께 볼 것")
+    if note:
+        print(f"- 공시 기준 {note}")
+    print("- **위 일정은 초등학교 것입니다.** 병설유치원은 대체로 이를 따르지만 "
+          "정확히 같지는 않습니다(유치원 법정 수업일수 180일, 초등학교 190일).")
+    print("- 방학 중에도 방과후과정은 운영되는 것이 보통이나, **누가 돌보는지**는 "
+          "유치원마다 다릅니다. profile 의 방과후 전담교사 인원을 함께 보세요.")
+    print(f"- 최종 확인은 유치원에 직접 문의"
+          + (f" (전화 {b.get('telno')})" if b.get("telno") else "") + "하세요.")
+
+    if args.meals:
+        today = datetime.now()
+        frm = today.strftime("%Y%m01")
+        to = today.strftime("%Y%m%d")
+        try:
+            meals = neis.fetch_meals(get_setting("NEIS_API_KEY"),
+                                     school["ATPT_OFCDC_SC_CODE"],
+                                     school["SD_SCHUL_CODE"], frm, to)
+        except neis.NeisError as e:
+            meals = []
+            print(f"\n(급식 조회 실패: {e})")
+        if meals:
+            print(f"\n## 급식 식단 (모초등학교, 최근 {len(meals)}일)")
+            for m in meals[-10:]:
+                print(f"- {fmt_date(m['date'])} {m['type']}: {m['menu'][:110]}"
+                      + (f" ({m['kcal']})" if m['kcal'] else ""))
+
+
 # ---------------------------------------------------------------- cmd: raw
 def cmd_raw(args):
     regions = resolve_region(args.region)
@@ -1055,6 +1176,14 @@ def main():
     add_age(sp)
     sp.add_argument("names", help="쉼표로 구분한 유치원명들 (예: '가나,다라,마바')")
     sp.set_defaults(func=cmd_compare)
+
+    sp = sub.add_parser("schedule",
+                        help="병설유치원의 방학·학사일정(모초등학교 기준, NEIS)")
+    add_common(sp)
+    sp.add_argument("name", help="유치원명(부분일치) 또는 kindercode")
+    sp.add_argument("--year", type=int, help="학년도 (기본: 현재 학년도)")
+    sp.add_argument("--meals", action="store_true", help="모초등학교 급식 식단도 표시")
+    sp.set_defaults(func=cmd_schedule)
 
     sp = sub.add_parser("raw", help="엔드포인트 원본 JSON")
     sp.add_argument("endpoint", choices=list(ENDPOINTS), help="엔드포인트명")
