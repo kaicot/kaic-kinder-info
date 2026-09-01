@@ -66,7 +66,7 @@ def _run(*argv: str) -> str:
 @mcp.tool()
 def search_kindergartens(region: str, age: int = 0, target: bool = False,
                          estab: str = "", name: str = "", near_km: float = 0,
-                         sort: str = "name") -> str:
+                         road: bool = False, sort: str = "name") -> str:
     """지역별 유치원 검색 — 학급/원아/정원/충원율/운영시간을 마크다운 표로 반환.
 
     Args:
@@ -75,9 +75,11 @@ def search_kindergartens(region: str, age: int = 0, target: bool = False,
         target: True면 .env 의 CHILD_BIRTH_YM 으로 입학 연령반을 자동 계산
         estab: 설립유형 필터 — '공립' | '사립' | '국립' (빈값=전체)
         name: 유치원명 부분일치 필터
-        near_km: 집(.env 의 HOME_LATLNG)에서 직선 N km 이내만. 0이면 전체
+        near_km: 집에서 N km 이내만. 0이면 전체. road=True면 도로 거리 기준
+        road: True면 **자차 도로 거리·시간**을 조회해 함께 표시(키 불필요, 수 초 추가).
+              "차로 몇 분?", "실제로 얼마나 걸려?" 류 질문이면 True로 호출할 것
         sort: 'name'(이름순) | 'size'(해당 연령 정원 많은순) | 'fill'(충원율순)
-              | 'dist'(집에서 가까운 순)
+              | 'dist'(가까운 순 — road=True면 도로 거리 기준)
     """
     args = ["search", region, "--sort", sort]
     if target:
@@ -86,6 +88,8 @@ def search_kindergartens(region: str, age: int = 0, target: bool = False,
         args += ["--age", str(age)]
     if near_km and near_km > 0:
         args += ["--near", str(near_km)]
+    if road:
+        args.append("--road")
     if estab:
         args += ["--estab", estab]
     if name:
@@ -245,6 +249,21 @@ def raw_data(endpoint: str, region: str) -> str:
         region: '서울 강남구' 또는 시군구코드
     """
     return _run("raw", endpoint, region)
+
+
+@mcp.tool()
+def set_home_location(map_link: str = "", show: bool = False) -> str:
+    """집 위치를 설정한다. **네이버지도 [공유] 링크**를 그대로 넘기면 좌표를 뽑아
+    저장하고, 이후 거리 필터(near_km)와 자차 경로(road)를 쓸 수 있다.
+    카카오맵 링크는 자체 좌표계라 쓸 수 없으니 네이버 링크를 요청할 것.
+
+    Args:
+        map_link: 네이버지도 공유 링크 (예: https://naver.me/XXXXXX)
+        show: True면 현재 저장된 좌표만 확인
+    """
+    if show or not map_link:
+        return _run("home", "--show")
+    return _run("home", map_link)
 
 
 @mcp.tool()

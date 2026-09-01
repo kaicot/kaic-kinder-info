@@ -23,7 +23,7 @@
 |---|---|---|---|
 | `KINDER_API_KEY` | **필수** | [유치원알리미 → 자료실 → OPEN API](https://e-childschoolinfo.moe.go.kr/openApi/openApiIntro.do) (자동승인) | 검색·비교·종합 리포트 (공시 14개 항목) |
 | `NEIS_API_KEY` | 선택 | [NEIS 교육정보 개방 포털](https://open.neis.go.kr) (무료) | 병설유치원 방학·급식 (`schedule`) |
-| `HOME_LATLNG` | 선택 | 지도 앱에서 집 위치 **우클릭** | 거리 필터 (`--near`), 가까운 순 정렬 |
+| `HOME_LATLNG` | 선택 | **네이버지도 [공유] 링크**를 `kinderinfo.py home "링크"` 에 넘기면 자동 저장 | 거리 필터(`--near`), 자차 경로(`--road`) |
 | `CHILD_BIRTH_YM` | 선택 | 직접 입력 (YYYY-MM) | 입학 연령반 자동 계산 (`--target`) |
 
 **키가 아예 필요 없는 기능**: 원비·시정명령 이력 조회(`profile --web`), 로드뷰·지도 링크.
@@ -168,17 +168,34 @@ python kinderinfo.py discover 경남        # 경기도는: discover 경기 --fu
 틀린 값을 보여주는 대신 **명시적으로 실패**하며, 항상 **원본 페이지 링크**를 함께 남깁니다.
 `python kinderweb.py selftest`로 화면 구조가 그대로인지 언제든 확인할 수 있습니다.
 
-### 집에서 가까운 곳 추리기 (`--near`)
+### 집에서 가까운 곳 추리기 (`home`·`--near`·`--road`)
 
-유치원 좌표가 공시에 이미 들어 있어(전 지역 100% 보유) **추가 API 없이** 거리를 계산합니다.
-`.env`에 `HOME_LATLNG=위도,경도`를 넣으면 됩니다(지도 앱에서 집을 우클릭하면 나옵니다).
+먼저 집 위치를 알려줍니다. **네이버지도에서 집을 찾아 [공유] 링크를 복사**해 넘기면 끝입니다.
 
 ```bash
-python kinderinfo.py search "서울 강남구" --target --near 1.5 --sort dist
+python kinderinfo.py home "https://naver.me/XXXXXX"
+python kinderinfo.py search "서울 강남구" --target --near 1.5 --road --sort dist
 ```
 
-> **직선거리는 언덕과 도로를 무시한 하한값입니다.** 지형이 험한 곳에서는 직선으로 가까워도
-> 실제로는 훨씬 불편할 수 있으니, **후보를 추리는 용도로만** 쓰세요.
+> 카카오맵 링크는 위경도가 아니라 자체 좌표계를 담고 있어 쓸 수 없습니다. 도로명주소
+> 자동 변환도 한국에서는 건물번호를 무시하고 도로만 잡아 신뢰할 수 없습니다.
+
+**`--road`를 붙이면 직선거리 대신 실제 자차 도로 거리·시간**을 봅니다(키 불필요).
+직선거리는 지형이 험한 곳에서 크게 어긋납니다 — 실측하면 우회율이 이렇게 벌어집니다.
+
+| 유치원 | 직선 | 자차(도로) | 우회율 |
+|---|---|---|---|
+| A | 0.54km | 0.72km / 2분 | 1.3배 |
+| B | 0.54km | **1.20km** / 3분 | **2.2배** ⚠ |
+| C | 1.20km | **3.66km** / 5분 | **3.0배** ⚠ |
+
+직선거리가 똑같아 보이던 A와 B가 실제로는 두 배 가까이 차이납니다. 우회율이 2배를 넘으면
+⚠가 붙고, `report`의 방문 질문지에 동선을 묻는 항목이 자동으로 생깁니다.
+
+도로 조회는 직선거리로 넉넉히 거른 뒤 남은 곳만 부르고, 한 번 조회한 경로는 영구 캐시합니다
+(집·유치원 위치는 바뀌지 않으므로). **실시간 교통은 반영되지 않습니다** — 아침 등원
+시간대에는 더 걸리고, 한국 도로망은 OpenStreetMap 기반이라 일방통행·골목의 최신성이
+상용 지도보다 떨어질 수 있습니다.
 
 ### 정차 여건은 로드뷰로 (자차 등하원)
 
@@ -256,9 +273,9 @@ codex mcp add kaic-kinder-info -- "<파이썬 절대경로>" "<저장소 경로>
 > **`python`이라고만 쓰지 마세요.** Windows에서는 Microsoft Store 스텁으로 잡혀
 > `CONNECTION_CLOSED`로 실패합니다. `where python` / `which python3`로 절대 경로를 확인해 쓰세요.
 
-노출되는 도구(11종): `search_kindergartens`, `kindergarten_profile`, `compare_kindergartens`,
+노출되는 도구(12종): `search_kindergartens`, `kindergarten_profile`, `compare_kindergartens`,
 `kindergarten_schedule`, `kindergarten_report`, `kindergarten_trend`, `kindergarten_diff`,
-`save_shortlist`, `raw_data`, `list_regions`, `discover_region`
+`save_shortlist`, `set_home_location`, `raw_data`, `list_regions`, `discover_region`
 — CLI의 모든 기능을 대화로 쓸 수 있습니다. 후보를 저장해 두면
 "내 후보 추이 보여줘", "브리핑 다시 만들어줘"가 인자 없이 동작합니다.
 

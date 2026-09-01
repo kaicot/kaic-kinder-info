@@ -25,7 +25,7 @@ import urllib.request
 from datetime import datetime, timedelta
 from pathlib import Path
 
-__version__ = "1.6.0"
+__version__ = "1.7.0"
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.stderr.reconfigure(encoding="utf-8", errors="replace")
@@ -690,6 +690,69 @@ def map_url(b):
     return f"https://map.kakao.com/link/map/{name},{c[0]},{c[1]}"
 
 
+def load_route():
+    """경로 모듈 지연 로드. 없으면 None — 직선거리만 쓴다."""
+    try:
+        import route
+    except ImportError:
+        return None
+    return route
+
+
+def road_from_home(b, quiet=True):
+    """집→유치원 자차 경로 (km, 분, 우회율). 못 구하면 (None, None, None)."""
+    rt = load_route()
+    home, there = home_coords(), coords_of(b)
+    if not rt or not home or not there:
+        return None, None, None
+    km, mins = rt.driving(home, there)
+    return km, mins, rt.detour_ratio(km, distance_from_home(b))
+
+
+def road_note(b):
+    """'1.20km / 3분 (직선의 2.2배 ⚠)' 형태."""
+    rt = load_route()
+    if not rt:
+        return None
+    km, mins, _ = road_from_home(b)
+    return rt.describe(km, mins, distance_from_home(b))
+
+
+def cmd_home(args):
+    """집 좌표 설정 — 네이버지도 공유 링크에서 바로 뽑는다."""
+    rt = load_route()
+    if not rt:
+        sys.exit("[오류] route.py 를 찾을 수 없습니다. 저장소에서 함께 받아주세요.")
+    if args.show or not args.link:
+        h = home_coords()
+        print(f"집 좌표: {h[0]}, {h[1]}" if h else
+              "집 좌표가 없습니다.\n"
+              "  네이버지도에서 집을 찾아 [공유] 링크를 복사한 뒤:\n"
+              '    python kinderinfo.py home "https://naver.me/XXXXXX"')
+        return
+    try:
+        lat, lng = rt.coords_from_map_link(args.link)
+    except rt.RouteError as e:
+        sys.exit(f"[오류] {e}")
+
+    lines, done = [], False
+    if ENV_FILE.exists():
+        for line in ENV_FILE.read_text(encoding="utf-8").splitlines():
+            if line.strip().startswith("HOME_LATLNG="):
+                lines.append(f"HOME_LATLNG={lat},{lng}")
+                done = True
+            else:
+                lines.append(line)
+    if not done:
+        lines += ["", "# 집 좌표 (지도 공유 링크에서 추출)",
+                  f"HOME_LATLNG={lat},{lng}"]
+    ENV_FILE.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    global _env_cache
+    _env_cache = None
+    print(f"집 좌표를 저장했습니다: {lat},{lng}")
+    print("이제 search --near / --road 로 집 기준 거리를 쓸 수 있습니다.")
+
+
 def bus_note(bus_row):
     """통학차량 운행 여부. 운행하면 거리보다 노선이 중요해진다."""
     if not bus_row:
@@ -840,13 +903,28 @@ def cmd_search(args):
                 or (to_int(r.get(f"ag{age}fpcnt")) or 0) > 0]
 
     home = home_coords()
-    if args.near:
+    road = {}   # kindercode -> (km, 분, 우회율)
+    if args.near or args.road:
         if not home:
-            sys.exit("[오류] --near 를 쓰려면 .env 에 HOME_LATLNG=위도,경도 를 설정하세요.\n"
-                     "  지도 앱(카카오맵·구글지도)에서 집을 우클릭하면 좌표가 나옵니다.\n"
-                     "  예: HOME_LATLNG=37.5665,126.9780")
-        rows = [r for r in rows
-                if (distance_from_home(r) or 1e9) <= args.near]
+            sys.exit("[오류] 집 좌표가 필요합니다. 네이버지도에서 집을 찾아 "
+                     "[공유] 링크를 복사한 뒤 아래를 실행하세요.\n"
+                     '  python kinderinfo.py home "https://naver.me/XXXXXX"')
+        limit = args.near or 1e9
+        # 도로 조회는 비싸므로 직선거리로 넉넉히 거른 뒤(2배) 남은 곳만 부른다.
+        # 직선으로는 멀어 보여도 도로로 가까운 곳을 놓치지 않기 위함.
+        prelim = limit * 2 if args.road else limit
+        rows = [r for r in rows if (distance_from_home(r) or 1e9) <= prelim]
+        if args.road:
+            rt = load_route()
+            if not rt:
+                sys.exit("[오류] route.py 를 찾을 수 없습니다.")
+            print(f"  [경로] {len(rows)}곳 자차 경로 조회 중...", file=sys.stderr)
+            for r in rows:
+                road[r["kindercode"]] = road_from_home(r)
+            if args.near:
+                rows = [r for r in rows
+                        if (road[r["kindercode"]][0] or
+                            distance_from_home(r) or 1e9) <= limit]
 
     size_key = f"ag{age or 3}fpcnt"
     keyf = {
@@ -854,7 +932,10 @@ def cmd_search(args):
         "size": lambda r: -(to_int(r.get(size_key)) or 0),
         "size3": lambda r: -(to_int(r.get(size_key)) or 0),   # 구 옵션 별칭
         "fill": lambda r: -(fill_rate(r) or -1),
-        "dist": lambda r: distance_from_home(r) if distance_from_home(r) is not None else 1e9,
+        "dist": (lambda r: (road.get(r["kindercode"], (None,))[0]
+                            or distance_from_home(r) or 1e9)) if road else
+                (lambda r: distance_from_home(r)
+                 if distance_from_home(r) is not None else 1e9),
     }[args.sort]
     rows.sort(key=keyf)
     if args.limit:
@@ -883,11 +964,20 @@ def cmd_search(args):
     age_col = f"만{age}세 학급/원아/정원" if age else "학급수(3/4/5세)"
     dist_col = "| 직선거리 " if home else ""
     dist_sep = "|---" if home else ""
-    print(f"| 유치원명 {dist_col}| 시군구 | 설립 | {age_col} | 혼합반 | "
+    road_col = "| 자차(도로) " if road else ""
+    road_sep = "|---" if road else ""
+    print(f"| 유치원명 {dist_col}{road_col}| 시군구 | 설립 | {age_col} | 혼합반 | "
           "전체 원아/정원(충원율) | 운영시간 | 전화 |")
-    print(f"|---{dist_sep}|---|---|---|---|---|---|---|")
+    print(f"|---{dist_sep}{road_sep}|---|---|---|---|---|---|---|")
     for r in rows:
         dist_cell = f"| {fmt_km(distance_from_home(r)) or '-'} " if home else ""
+        road_cell = ""
+        if road:
+            km, mins, ratio = road.get(r["kindercode"], (None, None, None))
+            road_cell = ("| {} ".format(
+                f"{km:.2f}km/{mins:.0f}분" + (f" ({ratio:.1f}배{'⚠' if ratio >= 2 else ''})"
+                                             if ratio else "")
+                if km is not None else "-"))
         if age:
             cell = (f"{to_int(r.get(f'clcnt{age}')) or 0}학급/"
                     f"{to_int(r.get(f'ppcnt{age}')) or 0}명/"
@@ -898,17 +988,23 @@ def cmd_search(args):
         mix = to_int(r.get("mixclcnt")) or 0
         tp, cap, fr = total_pupils(r), to_int(r.get("prmstfcnt")), fill_rate(r)
         whole = f"{tp}/{cap}" + (f" ({fr}%)" if fr is not None else "")
-        print(f"| {md_escape(r.get('kindername'))} {dist_cell}| {r.get('_sgg_name')} "
+        print(f"| {md_escape(r.get('kindername'))} {dist_cell}{road_cell}| {r.get('_sgg_name')} "
               f"| {r.get('establish')} | {cell} "
               f"| {mix or '-'} | {whole} | {r.get('opertime') or '-'} "
               f"| {r.get('telno') or '-'} |")
     print()
     print("혼합연령 학급에도 해당 연령이 포함될 수 있으니, 관심 유치원은 "
           "profile 로 상세 확인을 권장합니다.")
+    if home and not road:
+        print("\n직선거리는 **언덕과 도로를 무시한 하한값**입니다. 실측하면 우회율이 "
+              "1.0~3.1배까지 벌어집니다 — `--road` 를 붙이면 실제 자차 거리를 봅니다.")
+    if road:
+        rt = load_route()
+        print(f"\n자차 거리·시간: {rt.SOURCE_NOTE}")
+        print("⚠는 직선거리의 2배 넘게 돌아간다는 뜻입니다. 등하원 동선을 로드뷰로 "
+              "확인해 보세요.")
     if home:
-        print("\n직선거리는 **언덕과 도로를 무시한 하한값**입니다. 부산처럼 지형이 험한 곳에서는 "
-              "실제 이동 편의와 다를 수 있습니다.\n"
-              "자차 등하원이라면 **유치원 앞에 잠시 정차할 수 있는지**가 관건인데 이는 어떤 "
+        print("자차 등하원이라면 **유치원 앞에 잠시 정차할 수 있는지**가 관건인데 이는 어떤 "
               "데이터에도 없습니다. profile 의 로드뷰 링크로 직접 확인하세요.")
     notify_new_disclosure()
 
@@ -1072,6 +1168,7 @@ def summary_items(b, sections):
         ("집에서 직선거리",
          (f"{fmt_km(distance_from_home(b))} (언덕·도로 무시한 하한값)"
           if distance_from_home(b) is not None else None)),
+        ("집에서 자차", road_note(b)),
         ("통학차량 관점", bus_note(bus_row)),
     ]
 
@@ -1255,6 +1352,7 @@ def compare_table_lines(kinders, aux, age, extra_rows=()):
     metric_row("방과후 참여율", afsc)
     if home_coords():
         metric_row("집에서 직선거리", lambda k: fmt_km(distance_from_home(k)))
+        metric_row("집에서 자차(도로)", road_note)
     metric_row("통학차량 관점",
                lambda k: (bus_note(aux[k["kindercode"]].get("schoolBus")) or "")
                .replace("**", ""))
@@ -1503,6 +1601,12 @@ def visit_questions(b, sections, web, sched, age):
     fr = fill_rate(b)
     if fr is not None and fr <= 40:
         qs.append(f"정원 대비 원아가 {fr}% 수준인데 특별한 이유가 있나요?")
+
+    _km, _mins, ratio = road_from_home(b)
+    if ratio and ratio >= 2.0:
+        qs.append(f"직선거리보다 도로가 {ratio:.1f}배 돌아갑니다"
+                  f"({_km:.1f}km, 약 {_mins:.0f}분). 등하원 동선이 어떻게 되나요? "
+                  f"원 앞 진입로가 일방통행인가요?")
 
     if bus and bus.get("vhcl_oprn_yn") == "Y":
         qs.append("통학차량 노선이 저희 동네를 지나나요? 차량에 동승 보호자가 있나요?")
@@ -1911,7 +2015,9 @@ def main():
     sp.add_argument("--name", help="유치원명 부분일치 필터")
     sp.add_argument("--estab", choices=["공립", "사립", "국립"], help="설립유형 필터")
     sp.add_argument("--near", type=float, metavar="KM",
-                    help="집(.env 의 HOME_LATLNG)에서 직선 N km 이내만")
+                    help="집에서 N km 이내만 (--road 와 함께면 도로 거리 기준)")
+    sp.add_argument("--road", action="store_true",
+                    help="자차 도로 거리·시간 조회(직선거리 대신 실제 경로, 키 불필요)")
     sp.add_argument("--sort", choices=["name", "size", "fill", "dist", "size3"],
                     default="name",
                     help="정렬: name=이름, size=해당 연령 정원 많은 순, "
@@ -1991,6 +2097,11 @@ def main():
 
     sp = sub.add_parser("refresh", help="캐시를 비워 최신 공시를 새로 받게 함")
     sp.set_defaults(func=cmd_refresh)
+
+    sp = sub.add_parser("home", help="집 좌표 설정 — 네이버지도 공유 링크를 붙여넣기")
+    sp.add_argument("link", nargs="?", help="네이버지도 공유 링크 (naver.me/... 등)")
+    sp.add_argument("--show", action="store_true", help="현재 집 좌표 보기")
+    sp.set_defaults(func=cmd_home)
 
     args = p.parse_args()
     try:

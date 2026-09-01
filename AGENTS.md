@@ -17,7 +17,7 @@
 |---|---|---|---|
 | `KINDER_API_KEY` | **필수** | 유치원알리미 → 자료실 → OPEN API | `search` `profile` `compare` `discover` |
 | `NEIS_API_KEY` | 선택 | open.neis.go.kr | `schedule` (병설유치원 방학·급식) |
-| `HOME_LATLNG` | 선택 | 지도 앱에서 집 우클릭 | `--near`, `--sort dist` |
+| `HOME_LATLNG` | 선택 | **네이버지도 [공유] 링크** → `kinderinfo.py home "링크"` | `--near`, `--road`, `--sort dist` |
 | `CHILD_BIRTH_YM` | 선택 | 직접 입력 | `--target` (입학 연령반 자동 계산) |
 
 **키가 필요 없는 기능**: `profile --web`(원비·시정명령 — 웹 공시를 직접 읽음),
@@ -221,6 +221,8 @@ python sync_skill.py
 | "○○유치원 자세히" | `profile "서울 강남구" ○○` |
 | "원비 얼마야?" / "행정처분 있었어?" | `profile "서울 강남구" ○○ --web` |
 | "후보 정리해줘" / "방문 때 뭘 물어볼까?" | `report "서울 강남구" "A,B,C" --target --out 브리핑.md` |
+| "집은 여기야" (지도 링크 첨부) | `home "<네이버지도 공유 링크>"` — 카카오 링크면 네이버로 달라고 안내 |
+| "실제로 몇 분 걸려?" / "차로 가면?" | `search ... --near 2 --road` (자차 도로 거리·시간) |
 | "이 세 곳이 내 후보야" | `pick "서울 강남구" "A,B,C"` — 이후 report/trend/diff 인자 생략 가능 |
 | "추세가 어때?" / "좋아지고 있어?" | `trend` (후보 저장 시 인자 불필요) |
 | "새 공시에서 뭐 바뀌었어?" | `diff` |
@@ -273,6 +275,7 @@ API 원본 응답을 직접 확인하세요.
 | `neis.py` | NEIS 연동(병설유치원 방학·급식). 실패해도 본체와 무관 |
 | `kinderweb.py` | 유치원알리미 웹 공시 조회(원비·시정명령·평가). 키 불필요, 실패해도 본체와 무관 |
 | `kinderbulk.py` | 과거 공시 차수 일괄 데이터(추이·diff 데이터원). 키 불필요, 과거 차수는 영구 캐시 |
+| `route.py` | 자차 도로 경로(OSRM 공개 서버)와 지도 링크→좌표 추출. 키 불필요, 경로는 영구 캐시 |
 | `mcp_server.py` | CLI를 MCP 도구 8종으로 노출 |
 | `sync_skill.py` | 스킬 원본을 Claude/Codex 폴더에 배포 |
 | `check_docs.py` | 문서 동기화 점검(MCP 목록·구조 표·버전·명령). 릴리스 전 필수 |
