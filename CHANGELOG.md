@@ -3,6 +3,15 @@
 이 프로젝트는 [유의적 버전](https://semver.org/lang/ko/)을 따릅니다.
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/)를 따릅니다.
 
+## [1.5.2] - 2026-09-01
+
+### Added
+
+- **`check_docs.py`** — 문서 동기화 점검 도구. MCP 도구 목록↔README,
+  루트 파이썬 파일↔AGENTS 구조 표, `__version__`↔CHANGELOG, CLI 명령↔README·스킬을
+  기계적으로 대조한다. v1.5.1에서 사람이 놓쳤던 종류의 어긋남을 릴리스 전에 잡기 위한 것.
+  릴리스 절차 3번으로 편입(AGENTS.md).
+
 ## [1.5.1] - 2026-09-01
 
 ### Fixed

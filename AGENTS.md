@@ -271,6 +271,7 @@ API 원본 응답을 직접 확인하세요.
 | `kinderweb.py` | 유치원알리미 웹 공시 조회(원비·시정명령·평가). 키 불필요, 실패해도 본체와 무관 |
 | `mcp_server.py` | CLI를 MCP 도구 8종으로 노출 |
 | `sync_skill.py` | 스킬 원본을 Claude/Codex 폴더에 배포 |
+| `check_docs.py` | 문서 동기화 점검(MCP 목록·구조 표·버전·명령). 릴리스 전 필수 |
 | `skill/kaic-kinder-info/SKILL.md` | 스킬 **원본**. 반드시 여기만 고칠 것 |
 
 ### 개발 규약
@@ -298,12 +299,17 @@ python kinderweb.py selftest                           # 웹 공시 파서 3종 
 
 ### 릴리스 절차 (유의적 버전)
 
+**기능과 문서는 같은 커밋에서 고친다.** 명령·옵션·MCP 도구·파일 구성이 바뀌면
+README·AGENTS·스킬 원본의 해당 표와 목록을 그 자리에서 갱신한다.
+파생 문서는 조용히 낡는다 — 아래 3번이 그걸 기계로 잡는다.
+
 1. `kinderinfo.py`의 `__version__` 수정
    - **MAJOR**: CLI 옵션이나 MCP 도구 이름이 바뀌어 기존 사용법이 깨질 때
    - **MINOR**: 기능 추가 (하위 호환 유지)
    - **PATCH**: 버그 수정, 문서 정리
 2. `CHANGELOG.md`에 항목 추가 (Added / Changed / Fixed / Removed)
-3. 커밋 후 태그: `git tag -a v1.1.0 -m "..."` → `git push --tags`
+3. **`python check_docs.py` 통과 확인** — 실패하면 문서를 고치고 나서 커밋한다
+4. 커밋 후 태그: `git tag -a v1.1.0 -m "..."` → `git push --tags`
 
 ### API 함정 (재발견 비용이 큰 것들)
 
