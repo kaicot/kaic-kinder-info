@@ -37,6 +37,7 @@ PAGES = {
     "violation": ("kinderViolation", "위반내용"),
     "operate": ("kinderOperate", "유치원 평가"),
     "classes": ("kinderChildAndStaff", "연령별 학급 현황"),
+    "hours": ("kinderEducateAndCare", "교육과정 운영시간"),
 }
 TIMEOUT = 25
 CACHE_DAYS = 7
@@ -428,6 +429,87 @@ def get_age_classes(itt_id, fresh=False):
     return out
 
 
+# ------------------------------------------------------------- 실제 운영시간
+def _clock(text):
+    """'09시 00분' 또는 '09:00'을 HH:MM으로 정규화한다."""
+    m = re.search(r"(?<!\d)([0-2]?\d)\s*(?:시|:)\s*([0-5]?\d)?\s*분?", str(text))
+    if not m:
+        return None
+    hour = int(m.group(1))
+    minute = int(m.group(2) or 0)
+    if hour > 23:
+        return None
+    return f"{hour:02d}:{minute:02d}"
+
+
+def _clock_range(cells, title):
+    text = " ".join(str(c) for c in cells)
+    clocks = []
+    for m in re.finditer(r"(?<!\d)([0-2]?\d)\s*(?:시|:)\s*([0-5]?\d)?\s*분?", text):
+        clock = _clock(m.group(0))
+        if clock and clock not in clocks:
+            clocks.append(clock)
+    if len(clocks) < 2:
+        raise ParseChanged(f"'{title}'에서 시작·종료시간을 읽지 못했습니다")
+    if clocks[0] >= clocks[1]:
+        raise ParseChanged(f"'{title}'의 시작·종료시간 순서가 올바르지 않습니다")
+    return {"시작": clocks[0], "종료": clocks[1]}
+
+
+def parse_hours(html):
+    """정규 교육과정과 공시상 방과후·돌봄 전체 범위를 구조화한다.
+
+    방과후 표의 07~21시 같은 값은 일반 방과후만의 시간이 아니라 아침·저녁돌봄까지
+    합친 외곽 범위일 수 있다. 따라서 이름을 '공시전체범위'로 고정해 과장하지 않는다.
+    """
+    blocks = tables_of(html)
+    education = _find_grid(blocks, "교육과정 운영시간")
+    if education is None:
+        raise ParseChanged("'교육과정 운영시간' 표를 찾지 못했습니다")
+    edu_row = next((r for r in education
+                    if "교육과정 운영시간" in " ".join(r)), None)
+    if edu_row is None:
+        raise ParseChanged("교육과정 운영시간 행을 찾지 못했습니다")
+
+    outer = None
+    for heading, grid in blocks:
+        flat = " ".join(" ".join(r) for r in grid)
+        if ("방과후 과정 편성" in heading
+                and "시작시간" in flat and "종료시간" in flat):
+            outer = grid
+            break
+    if outer is None or len(outer) < 2:
+        raise ParseChanged("방과후 과정 시작·종료시간 표를 찾지 못했습니다")
+
+    plans = []
+    plan_grid = _find_grid(blocks, "연간 교육과정 편성 계획안")
+    if plan_grid and plan_grid[0]:
+        header = plan_grid[0]
+        file_col = next((i for i, h in enumerate(header) if "파일명" in h), None)
+        date_col = next((i for i, h in enumerate(header) if "등록일" in h), None)
+        if file_col is not None:
+            for row in plan_grid[1:]:
+                if file_col >= len(row) or not row[file_col].strip():
+                    continue
+                item = {"파일명": re.sub(r"\s*미리보기\s*$", "", row[file_col]).strip()}
+                if date_col is not None and date_col < len(row):
+                    item["등록일"] = row[date_col].strip()
+                plans.append(item)
+
+    return {
+        "교육과정": _clock_range(edu_row, "교육과정 운영시간"),
+        "공시전체범위": _clock_range(outer[1], "방과후 과정 운영시간"),
+        "계획서": plans,
+        "기준": _basis(html),
+    }
+
+
+def get_hours(itt_id, fresh=False):
+    out = parse_hours(fetch("hours", itt_id, fresh=fresh))
+    out["url"] = page_url("hours", itt_id)
+    return out
+
+
 # ---------------------------------------------------------------- selftest
 # 자가진단 표본: 서울 강남구의 실제 유치원 1곳(공개 공시 데이터).
 SELFTEST_ID = "34140010-58e8-44b4-9e91-49d5eb6669e1"   # 강남유정유치원
@@ -440,6 +522,7 @@ def selftest(itt_id=SELFTEST_ID, verbose=True):
         ("시정명령 표 파싱", lambda: parse_violations(fetch("violation", itt_id, fresh=True))),
         ("유치원 평가 표 파싱", lambda: parse_evaluation(fetch("operate", itt_id, fresh=True))),
         ("연령별 학급 표 파싱", lambda: parse_age_classes(fetch("classes", itt_id, fresh=True))),
+        ("운영시간 표 파싱", lambda: parse_hours(fetch("hours", itt_id, fresh=True))),
     ]
     ok = True
     for name, fn in checks:

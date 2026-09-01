@@ -26,8 +26,8 @@
 | `HOME_LATLNG` | 선택 | **네이버지도 [공유] 링크**를 `kinderinfo.py home "링크"` 에 넘기면 자동 저장 | 거리 필터(`--near`), 자차 경로(`--road`) |
 | `CHILD_BIRTH_YM` | 선택 | 직접 입력 (YYYY-MM) | 입학 연령반 자동 계산 (`--target`) |
 
-**키가 아예 필요 없는 기능**: 혼합반 세부 연령 구성, 원비·시정명령 이력 조회
-(`search --age`, `profile --web`), 로드뷰·지도 링크.
+**키가 아예 필요 없는 기능**: 혼합반 세부 연령 구성, 원비·시정명령·운영시간 조회
+(`search --age`, `profile --web`, `hours`), 로드뷰·지도 링크.
 유치원알리미 웹 공시 화면을 직접 읽기 때문입니다.
 
 ## 빠른 시작
@@ -74,8 +74,14 @@ python kinderinfo.py profile "서울 강남구" 강남유정 --web
 # 여러 곳 비교표
 python kinderinfo.py compare "서울 강남구" "강남유정,개현초등학교병설"
 
-# 최종 후보 브리핑 — 비교표 + 상세 + 방문 질문지를 한 문서로 (파일 저장 가능)
+# 후보들의 실제 운영시간 — 정규·방과후·조기·저녁·방학을 구분
+python kinderinfo.py hours "서울 강남구" "강남유정,개현초등학교병설" --year 2027
+
+# 최종 후보 브리핑 — 비교표 + 상세를 한 문서로 (파일 저장 가능)
 python kinderinfo.py report "서울 강남구" "강남유정,개현초등학교병설" --target --out 브리핑.md
+
+# 방문·전화 질문 목록이 필요한 경우에만 명시적으로 추가
+python kinderinfo.py report "서울 강남구" "강남유정,개현초등학교병설" --target --questions
 
 # 후보 저장 → 이후 report/trend/diff 는 인자 없이
 python kinderinfo.py pick "서울 강남구" "강남유정,개현초등학교병설"
@@ -132,17 +138,35 @@ Open API는 `만3세 전용반 0학급`과 `혼합반 3학급`까지만 주며, 
 
 ### 최종 후보 브리핑 (`report`)
 
-후보를 2~3곳으로 좁힌 뒤 쓰는 명령입니다. **비교표 + 유치원별 상세 + 방문 질문지**를
-한 문서로 만들어, 배우자와 상의하거나 방문 갈 때 그대로 들고 갈 수 있습니다.
-
-핵심은 **방문 질문지**입니다. 공시 데이터의 이상 신호를 질문으로 바꿔 줍니다 —
-병설이면 "방학 N일 동안 방과후 담당 인력은?"(실측 방학 일수 인용), 대상 연령반이 없으면
-"내년에 만N세 모집하나요?", 근속 1년 미만이 30% 이상이면 "최근 교사 변동이 있었나요?",
-비월단위 납부 항목이 있으면 "연간 총 부담액은?" 같은 식입니다. 시정명령 이력이 있으면
-경위를 묻는 질문이 맨 앞에 붙습니다.
+후보를 2~3곳으로 좁힌 뒤 쓰는 명령입니다. **비교표 + 유치원별 상세**를 한 문서로
+만들어 배우자와 상의하거나 저장할 수 있습니다. 방문·전화 질문 목록은 기본 출력하지
+않으며, 사용자가 원할 때만 `--questions`를 붙여 추가합니다.
 
 원비·시정명령·유치원 평가(웹 공시)와 병설 방학 실측(NEIS 키 있을 때)이 기본 포함되며,
 `--no-web`으로 웹 조회를 끄면 빨라집니다. `--out 파일.md`로 저장할 수 있습니다.
+
+### 실제 운영시간 비교 (`hours`)
+
+유치원알리미의 `07:00~18:00` 같은 시간은 정규수업 시간이 아니라 조기돌봄부터
+저녁돌봄까지 합친 **전체 운영 외곽 범위**일 수 있습니다. `hours`는 이를 다음처럼 나눕니다.
+
+- 정규 교육과정
+- 일반 방과후
+- 조기돌봄·저녁돌봄
+- 방학 중 운영시간과 미운영 기간
+- 이용 조건·정원 제한
+
+```bash
+python kinderinfo.py hours "서울 강남구" "A유치원,B유치원" --year 2027
+# CHILD_BIRTH_YM의 첫 입학 학년도로 자동 계산하려면
+python kinderinfo.py hours --target       # pick으로 저장한 후보 사용
+```
+
+웹 공시 운영시간은 키 없이 읽습니다. 더 세분된 시간은 공식 교육과정 운영계획서를
+사람이 확인한 로컬 `verified_hours.json`이 있을 때 함께 표시합니다. 이 파일은 후보·지역이
+드러날 수 있어 `.gitignore` 대상이며 공개 저장소에는 포함되지 않습니다. 요청한 학년도의
+계획서가 아직 없으면 이전 학년도를 **참고용**으로 명시하고, 현재 학년도 사실처럼 섞지 않습니다.
+`-`는 운영하지 않는다는 뜻이 아니라 세부 분리 자료를 확보하지 못했다는 뜻입니다.
 
 ### 추이와 변화 — 스냅샷의 함정을 벗어나기 (`pick`·`trend`·`diff`)
 
@@ -212,7 +236,7 @@ python kinderinfo.py search "서울 강남구" --target --near 1.5 --road --sort
 | C | 1.20km | **3.66km** / 5분 | **3.0배** ⚠ |
 
 직선거리가 똑같아 보이던 A와 B가 실제로는 두 배 가까이 차이납니다. 우회율이 2배를 넘으면
-⚠가 붙고, `report`의 방문 질문지에 동선을 묻는 항목이 자동으로 생깁니다.
+⚠가 붙습니다. 사용자가 확인 질문을 원해 `report --questions`를 쓴 경우에만 동선 질문이 추가됩니다.
 
 도로 조회는 직선거리로 넉넉히 거른 뒤 남은 곳만 부르고, 한 번 조회한 경로는 영구 캐시합니다
 (집·유치원 위치는 바뀌지 않으므로). **실시간 교통은 반영되지 않습니다** — 아침 등원
@@ -230,7 +254,7 @@ python kinderinfo.py search "서울 강남구" --target --near 1.5 --road --sort
 출력에 들어 있어, 클릭 한 번으로 유치원 앞 도로 폭과 갓길을 직접 볼 수 있습니다.
 
 통학차량을 운행하는 유치원이면 거리보다 **노선이 우리 동네를 지나는지**가 중요한데,
-노선 역시 데이터에 없어 전화로 확인해야 합니다. 출력에 이 점을 함께 표시합니다.
+노선은 공개 데이터에 없어 `노선 정보 미공시`로만 표시합니다.
 
 ### 병설유치원의 방학 찾기 (`schedule`)
 
@@ -295,8 +319,8 @@ codex mcp add kaic-kinder-info -- "<파이썬 절대경로>" "<저장소 경로>
 > **`python`이라고만 쓰지 마세요.** Windows에서는 Microsoft Store 스텁으로 잡혀
 > `CONNECTION_CLOSED`로 실패합니다. `where python` / `which python3`로 절대 경로를 확인해 쓰세요.
 
-노출되는 도구(12종): `search_kindergartens`, `kindergarten_profile`, `compare_kindergartens`,
-`kindergarten_schedule`, `kindergarten_report`, `kindergarten_trend`, `kindergarten_diff`,
+노출되는 도구(13종): `search_kindergartens`, `kindergarten_profile`, `compare_kindergartens`,
+`kindergarten_schedule`, `kindergarten_report`, `kindergarten_hours`, `kindergarten_trend`, `kindergarten_diff`,
 `save_shortlist`, `set_home_location`, `raw_data`, `list_regions`, `discover_region`
 — CLI의 모든 기능을 대화로 쓸 수 있습니다. 후보를 저장해 두면
 "내 후보 추이 보여줘", "브리핑 다시 만들어줘"가 인자 없이 동작합니다.

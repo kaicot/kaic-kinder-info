@@ -164,9 +164,11 @@ def kindergarten_schedule(region: str, name: str, year: int = 0,
 
 @mcp.tool()
 def kindergarten_report(region: str = "", names: str = "", age: int = 0,
-                        target: bool = False, no_web: bool = False) -> str:
-    """최종 후보 브리핑 — 비교표 + 유치원별 상세 + 추이 + **방문·전화 질문지**를
-    한 문서로 만든다. 후보를 좁힌 뒤 "브리핑 만들어줘", "방문 때 뭘 물어볼까"
+                        target: bool = False, no_web: bool = False,
+                        questions: bool = False) -> str:
+    """최종 후보 브리핑 — 비교표 + 유치원별 상세 + 추이를 한 문서로 만든다.
+    후보를 좁힌 뒤 "브리핑 만들어줘" 류 요청에 사용. 방문·전화 질문지는
+    사용자가 명시적으로 요청했을 때만 questions=True로 추가한다.
     류 요청에 사용. 전용·혼합 학급 구성, 원비·시정명령·평가(웹 공시)와
     충원율·혼합반 원아 추이가 기본 포함.
 
@@ -176,6 +178,7 @@ def kindergarten_report(region: str = "", names: str = "", age: int = 0,
         age: 기준 연령반(3|4|5). 0이면 만3세
         target: True면 .env 의 CHILD_BIRTH_YM 으로 기준 연령 자동 계산
         no_web: True면 원비·시정명령 웹 조회 생략(빠르게)
+        questions: True면 방문·전화 확인 질문 목록 추가. 기본은 False
     """
     args = ["report"]
     if region and names:
@@ -186,6 +189,31 @@ def kindergarten_report(region: str = "", names: str = "", age: int = 0,
         args += ["--age", str(age)]
     if no_web:
         args.append("--no-web")
+    if questions:
+        args.append("--questions")
+    return _run(*args)
+
+
+@mcp.tool()
+def kindergarten_hours(region: str = "", names: str = "", year: int = 0,
+                       target: bool = False) -> str:
+    """후보 유치원의 실질 운영시간을 정규 교육과정·일반 방과후·조기돌봄·
+    저녁돌봄·방학 운영으로 나눠 비교한다. 공시 전체 범위를 정규시간으로
+    오해하지 않도록 출처와 학년도를 함께 표시한다.
+
+    Args:
+        region: 지역. 비우면 저장된 후보 사용
+        names: 쉼표로 구분한 유치원명 1~6곳. 비우면 저장 후보 사용
+        year: 확인할 학년도(예: 2027). 0이면 현재 학년도
+        target: True면 CHILD_BIRTH_YM으로 첫 입학 학년도 자동 계산
+    """
+    args = ["hours"]
+    if region and names:
+        args += [region, names]
+    if year:
+        args += ["--year", str(year)]
+    if target:
+        args.append("--target")
     return _run(*args)
 
 

@@ -11,6 +11,7 @@
   search    지역별 유치원 검색 (--age 3|4|5, --target 등)
   profile   유치원 1곳의 전체 공시 항목 종합 리포트
   compare   여러 유치원 핵심 지표 비교표
+  hours     실제 운영시간(정규·방과후·돌봄) 출처별 비교
   raw       엔드포인트 원본 JSON 덤프
 """
 import argparse
@@ -25,7 +26,7 @@ import urllib.request
 from datetime import datetime, timedelta
 from pathlib import Path
 
-__version__ = "1.8.0"
+__version__ = "1.9.0"
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.stderr.reconfigure(encoding="utf-8", errors="replace")
@@ -219,6 +220,12 @@ def next_admission_year(today=None):
     return (today or datetime.now()).year + 1
 
 
+def current_school_year(today=None):
+    """현재 날짜에 진행 중인 학년도(한국 학년도는 3월 시작)."""
+    now = today or datetime.now()
+    return now.year if now.month >= 3 else now.year - 1
+
+
 def age_class_for(birth_year, school_year):
     """해당 학년도에 배정되는 유치원 연령(만N세). 만3세반 = 출생연도+4."""
     return school_year - birth_year - 1
@@ -260,6 +267,20 @@ def resolve_target_age():
     note = (f"{birth_year}년 {birth_month}월생 → {year}학년도 만{age}세반 대상 "
             f"(처음학교로 접수: {year - 1}년 11월경)")
     return age, note
+
+
+def requested_school_year(args):
+    """명령의 비교 학년도. --year > --target > 현재 학년도 순서."""
+    explicit = getattr(args, "year", None)
+    if explicit:
+        return int(explicit)
+    if getattr(args, "target", False):
+        parsed = parse_birth_ym(get_setting("CHILD_BIRTH_YM"))
+        if not parsed:
+            sys.exit("[오류] --target 을 쓰려면 .env 에 "
+                     "CHILD_BIRTH_YM=YYYY-MM 을 설정하세요.")
+        return parsed[0] + 4
+    return current_school_year()
 
 
 def to_int(v):
@@ -764,7 +785,7 @@ def bus_note(bus_row):
         return None
     if bus_row.get("vhcl_oprn_yn") == "Y":
         n = to_int(bus_row.get("opra_vhcnt")) or 0
-        return f"운행 {n}대 — **노선이 우리 동네를 지나는지 전화로 확인**"
+        return f"운행 {n}대 (노선 정보는 미공시)"
     return "미운행 — 자차·도보 등하원"
 
 
@@ -799,6 +820,89 @@ def operating_note(b, asp_row=None):
     if after and str(after) != str(base):
         note += f" / 방과후 {after}"
     return note + " (문 여는 시간 기준. 정규 교육과정은 1일 4~5시간이고 나머지는 방과후·돌봄)"
+
+
+def fmt_time_range(value):
+    """{'시작':'09:00','종료':'14:00'}를 한 줄 시간 범위로 표시."""
+    if not isinstance(value, dict):
+        return None
+    start, end = value.get("시작"), value.get("종료")
+    return f"{start}~{end}" if start and end else None
+
+
+def gather_hours(kinder, school_year=None, fresh=False):
+    """웹 공시와 로컬 공식문서 검증값을 합친 운영시간 정보."""
+    school_year = school_year or current_school_year()
+    result = {"requested_year": school_year, "web": None,
+              "verified": None, "warnings": []}
+    code = kinder.get("kindercode")
+    try:
+        import kinderweb
+        result["web"] = kinderweb.get_hours(code, fresh=fresh)
+    except Exception as e:  # noqa: BLE001 — 부가 웹 공시
+        result["warnings"].append(f"웹 운영시간 조회 실패: {e}")
+    try:
+        import verified_hours
+        result["verified"] = verified_hours.get(code, school_year)
+    except Exception as e:  # noqa: BLE001 — 로컬 검증정보 오류도 본체와 분리
+        result["warnings"].append(f"공식문서 검증정보 읽기 실패: {e}")
+
+    web_range = (result.get("web") or {}).get("교육과정")
+    verified_range = (result.get("verified") or {}).get("education")
+    if (web_range and verified_range
+            and fmt_time_range(web_range) != fmt_time_range(verified_range)):
+        result["warnings"].append(
+            "웹 공시 교육과정 시간과 공식 계획서 검증값이 서로 다름")
+    return result
+
+
+def hours_value(info, key):
+    """운영시간 항목 하나를 출처·학년도와 함께 표시."""
+    if not isinstance(info, dict):
+        return None
+    verified = info.get("verified") or {}
+    value = verified.get(key)
+    if value:
+        year = verified.get("school_year")
+        requested = info.get("requested_year")
+        suffix = f" ({year} 공식 계획서"
+        if requested and year != requested:
+            suffix += f", {requested}학년도 참고용"
+        return fmt_time_range(value) + suffix + ")"
+    if key == "education":
+        web = info.get("web") or {}
+        value = web.get("교육과정")
+        if value:
+            return f"{fmt_time_range(value)} ({web.get('기준') or '웹 공시'})"
+    return None
+
+
+def hours_summary_items(b, asp_row=None, info=None):
+    """profile/report에 넣는 운영시간의 출처 구분 행."""
+    if not info:
+        return [("공시 전체 운영범위", operating_note(b, asp_row))]
+    web = info.get("web") or {}
+    verified = info.get("verified") or {}
+    outer = fmt_time_range(web.get("공시전체범위")) or b.get("opertime")
+    rows = [
+        ("공시 전체 운영범위",
+         (f"{outer} (조기·정규·방과후·저녁돌봄을 합친 외곽 범위)"
+          if outer else None)),
+        ("정규 교육과정", hours_value(info, "education")),
+        ("일반 방과후", hours_value(info, "afterschool")),
+        ("조기돌봄", hours_value(info, "early_care")),
+        ("저녁돌봄", hours_value(info, "late_care")),
+        ("방학 중 운영", hours_value(info, "vacation_hours")),
+    ]
+    closures = verified.get("vacation_closures") or []
+    conditions = verified.get("conditions") or []
+    if closures:
+        rows.append(("방학 미운영", " · ".join(closures)))
+    if conditions:
+        rows.append(("운영 조건", " · ".join(conditions)))
+    for warning in info.get("warnings") or []:
+        rows.append(("운영시간 주의", f"⚠ {warning}"))
+    return rows
 
 
 def area_per_pupil(c, b):
@@ -1048,10 +1152,10 @@ def cmd_search(args):
     print()
     if age:
         print("* 혼합반 정원·현원은 포함 연령 전체의 합계입니다. 실제 만"
-              f"{age}세 모집 인원은 유치원에 확인하세요.")
+              f"{age}세 모집 인원과는 다를 수 있습니다.")
         if any(v == "unverified" for v in age_details.values()):
             print("⚠ 웹 학급표를 확인하지 못한 곳은 후보에서 빼지 않고 '구성 미확인'으로 "
-                  "남겼습니다. profile --web 또는 유치원 전화로 확인하세요.")
+                  "남겼습니다. profile --web으로 원본 공시를 다시 확인할 수 있습니다.")
     if home and not road:
         print("\n직선거리는 **언덕과 도로를 무시한 하한값**입니다. 실측하면 우회율이 "
               "1.0~3.1배까지 벌어집니다 — `--road` 를 붙이면 실제 자차 거리를 봅니다.")
@@ -1248,7 +1352,7 @@ def first_row(sections, ep):
     return v[0] if isinstance(v, list) and v else None
 
 
-def summary_items(b, sections):
+def summary_items(b, sections, hours=None):
     """핵심 요약(파생 지표) 목록. profile 과 report 가 공유한다."""
     yow_row = first_row(sections, "yearOfWork")
     asp_row = first_row(sections, "afterSchoolPresent")
@@ -1257,7 +1361,7 @@ def summary_items(b, sections):
     bus_row = first_row(sections, "schoolBus")
     lsn_row = first_row(sections, "lessonDay")
     ts = tenure_stats(yow_row)
-    return [
+    items = [
         ("만3세", f"{to_int(b.get('clcnt3')) or 0}학급 / 원아 "
                   f"{to_int(b.get('ppcnt3')) or 0}명 / 정원 "
                   f"{to_int(b.get('ag3fpcnt')) or 0}명"
@@ -1279,19 +1383,24 @@ def summary_items(b, sections):
          f"{afterschool_participants(asp_row)}명)"
          if asp_row and afterschool_rate(asp_row, b) is not None else None),
         ("등원 가능일수", attendance_note(lsn_row, b)),
-        ("운영시간", operating_note(b, asp_row)),
+    ]
+    items.extend(hours_summary_items(b, asp_row, hours))
+    items.extend([
         ("집에서 직선거리",
          (f"{fmt_km(distance_from_home(b))} (언덕·도로 무시한 하한값)"
           if distance_from_home(b) is not None else None)),
         ("집에서 자차", road_note(b)),
         ("통학차량 관점", bus_note(bus_row)),
-    ]
+    ])
+    return items
 
 
 def cmd_profile(args):
     regions = resolve_region(args.region)
     b = find_kinder(regions, args.name, fresh=args.fresh)
     sections = gather_sections(b, fresh=args.fresh)
+    hours = (gather_hours(b, current_school_year(), fresh=args.fresh)
+             if getattr(args, "web", False) else None)
 
     if args.json:
         out = {"basicInfo2": b}
@@ -1309,6 +1418,7 @@ def cmd_profile(args):
                         b["kindercode"], fresh=args.fresh),
                     "evaluation": kinderweb.get_evaluation(
                         b["kindercode"], fresh=args.fresh),
+                    "hours": hours,
                 }
             except Exception as e:  # noqa: BLE001 — 부가 정보라 본체를 막지 않는다
                 out["web"] = {"error": str(e)}
@@ -1320,7 +1430,7 @@ def cmd_profile(args):
           f"{fmt_pbnttmng(b.get('pbnttmng'))} 기준")
     print()
     print("## 핵심 요약(파생 지표)")
-    for label, val in summary_items(b, sections):
+    for label, val in summary_items(b, sections, hours=hours):
         if val:
             print(f"- **{label}**: {val}")
     print()
@@ -1387,7 +1497,7 @@ def gather_compare_aux(kinders, fresh=False):
     return aux
 
 
-def compare_table_lines(kinders, aux, age, extra_rows=()):
+def compare_table_lines(kinders, aux, age, extra_rows=(), hours_map=None):
     """비교표 마크다운 줄 목록. compare 와 report 가 공유한다.
 
     extra_rows: (라벨, fn(kinder)→str|None) 목록 — 주소 행 앞에 끼워 넣는다.
@@ -1455,7 +1565,20 @@ def compare_table_lines(kinders, aux, age, extra_rows=()):
     metric_row("시군구", lambda k: k.get("_sgg_name"))
     metric_row("설립유형", lambda k: k.get("establish"))
     metric_row("개원일", lambda k: fmt_date(k.get("odate")))
-    metric_row("운영시간", lambda k: k.get("opertime"))
+    if hours_map:
+        metric_row("공시 전체 운영범위", lambda k: (
+            fmt_time_range(((hours_map.get(k["kindercode"]) or {}).get("web") or {})
+                           .get("공시전체범위")) or k.get("opertime")))
+        metric_row("정규 교육과정", lambda k: hours_value(
+            hours_map.get(k["kindercode"]), "education"))
+        metric_row("일반 방과후", lambda k: hours_value(
+            hours_map.get(k["kindercode"]), "afterschool"))
+        metric_row("조기돌봄", lambda k: hours_value(
+            hours_map.get(k["kindercode"]), "early_care"))
+        metric_row("저녁돌봄", lambda k: hours_value(
+            hours_map.get(k["kindercode"]), "late_care"))
+    else:
+        metric_row("공시 전체 운영범위", lambda k: k.get("opertime"))
     metric_row(f"만{age}세 학급수", lambda k: to_int(k.get(f"clcnt{age}")))
     metric_row(f"만{age}세 원아/정원",
                lambda k: (f"{to_int(k.get(f'ppcnt{age}')) or 0}/"
@@ -1496,12 +1619,15 @@ def cmd_compare(args):
         sys.exit("[오류] compare 는 쉼표로 구분한 2곳 이상이 필요합니다.")
     kinders = [find_kinder(regions, n, fresh=args.fresh) for n in names]
     aux = gather_compare_aux(kinders, fresh=args.fresh)
+    school_year = requested_school_year(args)
+    hours_map = {k["kindercode"]: gather_hours(
+        k, school_year, fresh=args.fresh) for k in kinders}
 
     print(f"# 유치원 비교 ({fmt_pbnttmng(kinders[0].get('pbnttmng'))} 기준)")
     if target_note:
         print(f"대상: {target_note}")
     print()
-    for line in compare_table_lines(kinders, aux, age):
+    for line in compare_table_lines(kinders, aux, age, hours_map=hours_map):
         print(line)
     print()
     print("근속 평균은 공시 구간(1년 미만~6년 이상)의 중간값 가중 추정치입니다. "
@@ -1788,6 +1914,7 @@ def visit_questions(b, sections, web, sched, age):
 def cmd_report(args):
     age, target_note = resolve_search_age(args)
     age = age or 3
+    school_year = requested_school_year(args)
     region, names_str = region_names_or_shortlist(args)
     regions = resolve_region(region)
     names = [n.strip() for n in names_str.split(",") if n.strip()]
@@ -1800,7 +1927,7 @@ def cmd_report(args):
     for k in kinders:
         code = k["kindercode"]
         info = {"sections": gather_sections(k, fresh=args.fresh),
-                "web": None, "sched": None}
+                "web": None, "sched": None, "hours": None}
         if not args.no_web:
             web = {}
             try:
@@ -1818,6 +1945,7 @@ def cmd_report(args):
             except Exception as e:  # noqa: BLE001 — 부가 정보
                 web["error"] = str(e)
             info["web"] = web
+            info["hours"] = gather_hours(k, school_year, fresh=args.fresh)
         if is_annex(k) and get_setting("NEIS_API_KEY"):
             try:
                 school, vacs, _events, yr = school_schedule(k, quiet=True)
@@ -1914,16 +2042,20 @@ def cmd_report(args):
 
     w("## 1. 한눈 비교")
     w("")
-    L.extend(compare_table_lines(kinders, aux, age, extra_rows=extra))
+    hours_map = {k["kindercode"]: per[k["kindercode"]].get("hours")
+                 for k in kinders if per[k["kindercode"]].get("hours")}
+    L.extend(compare_table_lines(kinders, aux, age, extra_rows=extra,
+                                 hours_map=hours_map or None))
     w("")
 
-    w("## 2. 유치원별 상세와 방문 질문")
+    w("## 2. 유치원별 상세" + ("와 확인 질문" if args.questions else ""))
     for i, k in enumerate(kinders, 1):
         info = per[k["kindercode"]]
         w("")
         w(f"### {i}. {k['kindername']} — {k.get('establish')} · {k.get('addr')}")
         w("")
-        for label, val in summary_items(k, info["sections"]):
+        for label, val in summary_items(k, info["sections"],
+                                        hours=info.get("hours")):
             if val:
                 w(f"- **{label}**: {val}")
         web = info.get("web")
@@ -1969,10 +2101,11 @@ def cmd_report(args):
             w("")
             for line in trend_lines(ser):
                 w(line)
-        w("")
-        w("**방문·전화로 확인할 것**")
-        for q in visit_questions(k, info["sections"], web, s, age):
-            w(f"- [ ] {q}")
+        if args.questions:
+            w("")
+            w("**요청한 확인 질문 목록**")
+            for q in visit_questions(k, info["sections"], web, s, age):
+                w(f"- [ ] {q}")
 
     yr = next_admission_year()
     w("")
@@ -1981,8 +2114,7 @@ def cmd_report(args):
       f"지원할 수 있습니다.")
     w(f"- 공시는 연 2회 갱신됩니다. **{yr - 1}년 10월 말 2차 공시가 뜨면 "
       f"`python kinderinfo.py refresh` 후 이 브리핑을 다시 만드세요.**")
-    w("- 원장·교사의 태도, 교실 분위기, 아이와의 궁합은 어떤 데이터에도 없습니다. "
-      "위 질문지를 들고 직접 확인하세요.")
+    w("- 원장·교사의 태도, 교실 분위기, 아이와의 궁합은 공시 데이터에 없습니다.")
     w("- 근속 평균은 공시 구간의 중간값 가중 추정치, 방학은 모초등학교 기준 근사치, "
       "직선거리는 언덕·도로를 무시한 하한값입니다.")
 
@@ -1992,6 +2124,82 @@ def cmd_report(args):
         print(f"저장했습니다: {args.out} ({len(text):,}자)")
     else:
         print(text)
+
+
+# -------------------------------------------------------------- cmd: hours
+def hours_source_label(info):
+    """운영시간 정보의 가장 강한 근거를 짧게 표시."""
+    verified = (info or {}).get("verified") or {}
+    if verified:
+        src = verified.get("source") or {}
+        year = verified.get("school_year")
+        title = src.get("title") or "공식 계획서"
+        return f"{title} 검증" if str(title).startswith(str(year)) else f"{year} {title} 검증"
+    web = (info or {}).get("web") or {}
+    if web:
+        return f"{web.get('기준') or '웹 공시'} (세부 분리 전)"
+    return None
+
+
+def cmd_hours(args):
+    """후보들의 실질 운영시간을 출처와 학년도까지 구분해 비교한다."""
+    region, names_str = region_names_or_shortlist(args)
+    regions = resolve_region(region)
+    names = [n.strip() for n in names_str.split(",") if n.strip()]
+    if not 1 <= len(names) <= 6:
+        sys.exit("[오류] hours 는 쉼표로 구분한 유치원 1~6곳을 받습니다.")
+    school_year = requested_school_year(args)
+    kinders = [find_kinder(regions, n, fresh=args.fresh) for n in names]
+    infos = {k["kindercode"]: gather_hours(
+        k, school_year, fresh=args.fresh) for k in kinders}
+
+    if args.json:
+        print(json.dumps({
+            "requested_school_year": school_year,
+            "kindergartens": [{"name": k["kindername"],
+                                "kindercode": k["kindercode"],
+                                "hours": infos[k["kindercode"]]}
+                               for k in kinders],
+        }, ensure_ascii=False, indent=1))
+        return
+
+    print(f"# 후보 유치원 실질 운영시간 — {school_year}학년도 기준")
+    print()
+    header = " | ".join(md_escape(k["kindername"]) for k in kinders)
+    print(f"| 항목 | {header} |")
+    print("|---" * (len(kinders) + 1) + "|")
+
+    def row(label, fn):
+        cells = " | ".join(md_escape(fn(infos[k["kindercode"]]) or "-")
+                           for k in kinders)
+        print(f"| {label} | {cells} |")
+
+    row("공시 전체 운영범위", lambda x: fmt_time_range(
+        ((x.get("web") or {}).get("공시전체범위"))))
+    row("정규 교육과정", lambda x: hours_value(x, "education"))
+    row("일반 방과후", lambda x: hours_value(x, "afterschool"))
+    row("조기돌봄", lambda x: hours_value(x, "early_care"))
+    row("저녁돌봄", lambda x: hours_value(x, "late_care"))
+    row("방학 중 운영", lambda x: hours_value(x, "vacation_hours"))
+    row("방학 미운영", lambda x: " · ".join(
+        ((x.get("verified") or {}).get("vacation_closures") or [])))
+    row("이용 조건·제약", lambda x: " · ".join(
+        ((x.get("verified") or {}).get("conditions") or [])))
+    row("근거", hours_source_label)
+
+    reference_years = sorted({
+        (info.get("verified") or {}).get("school_year")
+        for info in infos.values() if (info.get("verified") or {}).get("school_year")
+    })
+    print()
+    if reference_years and school_year not in reference_years:
+        print(f"⚠ {school_year}학년도 계획은 아직 확정·공개 전이어서 "
+              f"{', '.join(map(str, reference_years))}학년도 공식 계획서를 참고값으로 "
+              "표시했습니다. 학년도가 다르면 운영시간과 조건이 바뀔 수 있습니다.")
+    print("※ '공시 전체 운영범위'는 정규수업만의 시간이 아니라 조기·방과후·"
+          "저녁돌봄까지 합친 가장 이른 시작~가장 늦은 종료 범위입니다.")
+    print("※ '-'는 해당 운영이 없다는 뜻이 아니라, 현재 확보한 공식 자료에서 "
+          "세부 시간을 분리 확인하지 못했다는 뜻입니다.")
 
 
 # ----------------------------------------------------------- cmd: schedule
@@ -2034,8 +2242,7 @@ def cmd_schedule(args):
               "사립·단설 유치원의 학사일정은 공시되지 않습니다.")
         print(f"\n공시 기준 정규 수업일수: "
               f"{attendance_note(rows_for_kinder('lessonDay', b)[0] if rows_for_kinder('lessonDay', b) else None, b)}")
-        print("\n방학 일정은 유치원에 직접 문의하셔야 합니다"
-              + (f" (전화 {b.get('telno')})" if b.get("telno") else "") + ".")
+        print("\n사립·단설 유치원의 확정 방학 일정은 공개 데이터에 없습니다.")
         return
 
     try:
@@ -2094,8 +2301,7 @@ def cmd_schedule(args):
           "정확히 같지는 않습니다(유치원 법정 수업일수 180일, 초등학교 190일).")
     print("- 방학 중에도 방과후과정은 운영되는 것이 보통이나, **누가 돌보는지**는 "
           "유치원마다 다릅니다. profile 의 방과후 전담교사 인원을 함께 보세요.")
-    print(f"- 최종 확인은 유치원에 직접 문의"
-          + (f" (전화 {b.get('telno')})" if b.get("telno") else "") + "하세요.")
+    print("- 위 결과는 모초등학교 일정에 따른 참고값이며 유치원 확정 일정은 아닙니다.")
 
     if args.meals:
         today = datetime.now()
@@ -2197,7 +2403,7 @@ def main():
     sp.set_defaults(func=cmd_compare)
 
     sp = sub.add_parser("report",
-                        help="최종 후보 브리핑(비교표+상세+방문 질문지, 저장 가능)")
+                        help="최종 후보 브리핑(비교표+상세, 저장 가능)")
     add_common(sp, region=False)
     add_age(sp)
     sp.add_argument("region", nargs="?", help="지역 (생략 시 pick 저장 후보 사용)")
@@ -2207,7 +2413,19 @@ def main():
                     help="원비·시정명령 웹 조회 생략(빠르게)")
     sp.add_argument("--no-trend", action="store_true",
                     help="충원율·근속 추이 생략(빠르게)")
+    sp.add_argument("--questions", action="store_true",
+                    help="요청할 때만 방문·전화 확인 질문 목록 추가")
     sp.set_defaults(func=cmd_report)
+
+    sp = sub.add_parser("hours",
+                        help="후보들의 실제 운영시간(정규·방과후·돌봄)을 출처별 비교")
+    add_common(sp, region=False)
+    sp.add_argument("region", nargs="?", help="지역 (생략 시 pick 저장 후보 사용)")
+    sp.add_argument("names", nargs="?", help="쉼표로 구분한 유치원명 1~6곳")
+    sp.add_argument("--year", type=int, help="확인할 학년도 (예: 2027)")
+    sp.add_argument("--target", action="store_true",
+                    help="CHILD_BIRTH_YM으로 첫 입학 학년도 자동 계산")
+    sp.set_defaults(func=cmd_hours)
 
     sp = sub.add_parser("pick", help="후보 저장 — 이후 report/trend/diff 인자 생략 가능")
     sp.add_argument("region", nargs="?", help="지역 (예: '서울 강남구')")
