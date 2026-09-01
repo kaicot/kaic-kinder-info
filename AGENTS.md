@@ -11,6 +11,19 @@
 
 사용자가 직접 준비해야 하는 것은 **유치원알리미 Open API 인증키 하나뿐**입니다.
 
+### 키·설정 지도 (전부 `.env`에, 필수는 하나)
+
+| 설정 | 필수 | 발급처 | 쓰이는 기능 |
+|---|---|---|---|
+| `KINDER_API_KEY` | **필수** | 유치원알리미 → 자료실 → OPEN API | `search` `profile` `compare` `discover` |
+| `NEIS_API_KEY` | 선택 | open.neis.go.kr | `schedule` (병설유치원 방학·급식) |
+| `HOME_LATLNG` | 선택 | 지도 앱에서 집 우클릭 | `--near`, `--sort dist` |
+| `CHILD_BIRTH_YM` | 선택 | 직접 입력 | `--target` (입학 연령반 자동 계산) |
+
+**키가 필요 없는 기능**: `profile --web`(원비·시정명령 — 웹 공시를 직접 읽음),
+로드뷰·지도 링크. 사용자가 선택 키를 안 만들었어도 이 기능들은 항상 동작합니다.
+선택 기능을 쓰려는 순간에만 해당 키를 받자고 제안하세요 — 처음부터 다 받게 하지 마세요.
+
 ---
 
 ## 사용자 응대 원칙 — 먼저 읽으세요
@@ -206,6 +219,7 @@ python sync_skill.py
 | "우리 아이 나이에 맞는 곳" | `search "서울 강남구" --target` |
 | "공립만 보여줘" | `search "서울 강남구" --age 3 --estab 공립` |
 | "○○유치원 자세히" | `profile "서울 강남구" ○○` |
+| "원비 얼마야?" / "행정처분 있었어?" | `profile "서울 강남구" ○○ --web` |
 | "A랑 B 비교해줘" | `compare "서울 강남구" "A,B"` |
 | "거기 방학 언제야?" | `schedule "서울 강남구" ○○초등학교병설` (병설만) |
 | "정원 많은 순으로" | `search ... --sort size` |
@@ -236,6 +250,7 @@ python sync_skill.py
 | `python`이 Microsoft Store를 엶 | Windows 가짜 파이썬 스텁 | python.org 버전 설치, 또는 `py` 사용 |
 | MCP가 `CONNECTION_CLOSED` | `python`을 상대 경로로 등록함 | 파이썬 **절대 경로**로 다시 등록 |
 | MCP 등록 후 `ModuleNotFoundError: mcp` | `mcp` 패키지 미설치 | `pip install mcp` |
+| `--web`만 실패(다른 기능은 정상) | 유치원알리미 화면 개편 가능성 | `python kinderweb.py selftest`로 확인. 실패하면 출력에 있는 **원본 링크**로 직접 안내 |
 | 한글이 깨져 보임 | 터미널 인코딩 | 도구는 UTF-8로 출력함. 터미널 설정 확인 |
 
 진단이 막히면 `--json`을 붙여 원자료를 보거나, `raw basicInfo2 <지역>`으로

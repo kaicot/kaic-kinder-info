@@ -90,15 +90,20 @@ def search_kindergartens(region: str, age: int = 0, target: bool = False,
 
 
 @mcp.tool()
-def kindergarten_profile(region: str, name: str) -> str:
+def kindergarten_profile(region: str, name: str, web: bool = False) -> str:
     """유치원 1곳의 전체 공시 항목 종합 리포트(기본현황·건물·수업일수·교사근속·
     통학차량·안전점검·CCTV·환경위생·보험·방과후 등 + 파생 지표).
 
     Args:
         region: '서울 강남구' 같은 지역 (검색 범위)
         name: 유치원명 부분일치(예: '햇살') 또는 kindercode
+        web: True면 원비·시정명령 이력을 유치원알리미 웹에서 함께 조회(수 초 추가).
+             원비나 행정처분을 물으면 True로 호출할 것
     """
-    return _run("profile", region, name)
+    args = ["profile", region, name]
+    if web:
+        args.append("--web")
+    return _run(*args)
 
 
 @mcp.tool()

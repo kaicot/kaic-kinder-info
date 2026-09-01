@@ -25,7 +25,7 @@ import urllib.request
 from datetime import datetime, timedelta
 from pathlib import Path
 
-__version__ = "1.3.0"
+__version__ = "1.4.0"
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.stderr.reconfigure(encoding="utf-8", errors="replace")
@@ -851,6 +851,89 @@ def cmd_search(args):
               "데이터에도 없습니다. profile 의 로드뷰 링크로 직접 확인하세요.")
 
 
+# ------------------------------------------------------ 웹 공시(원비·시정명령)
+def fmt_won(v):
+    return "-" if v is None else f"{v:,}원"
+
+
+def _cost_total_line(table):
+    total = next((v for k, v in table.items() if k.startswith("합계")), None)
+    if not total:
+        return None
+    a = total["금액"]
+    return " / ".join(f"만{age}세 {fmt_won(a.get(age))}" for age in AGE_CLASSES)
+
+
+def render_web_extras(b, out=None):
+    """유치원알리미 웹 공시(원비·시정명령)를 profile 에 붙인다.
+
+    공식 API 가 아니라서 실패할 수 있다 — 실패해도 리포트의 나머지는 그대로 나오고,
+    사람이 확인할 수 있게 원본 링크를 남긴다.
+    """
+    try:
+        import kinderweb
+    except ImportError:
+        print("## 웹 공시 — 시정명령·원비\n- ⚠ kinderweb.py 를 찾을 수 없습니다. "
+              "저장소에서 함께 받아주세요.\n")
+        return
+    code = b.get("kindercode")
+    print("## 웹 공시 — 시정명령·원비")
+
+    try:
+        v = kinderweb.get_violations(code)
+        if out is not None:
+            out["violations"] = v
+        if v["clean"]:
+            print("- **시정명령·행정처분 이력**: 공시된 이력 없음"
+                  + (f" (기준 {v['기준']})" if v.get("기준") else ""))
+        else:
+            print(f"- **시정명령·행정처분 이력**: ⚠ **{len(v['items'])}건** — 내용 확인 필수")
+            for it in v["items"]:
+                print(f"  - {it['제목']} | 위반: {it['위반내용']} | "
+                      f"조치: {it['조치결과']} ({it['기관']})")
+        print(f"  - 원본: {v['url']}")
+    except kinderweb.WebError as e:
+        print(f"- ⚠ 시정명령 조회 실패: {e}")
+        print(f"  - 직접 확인: {kinderweb.page_url('violation', code)}")
+
+    try:
+        c = kinderweb.get_costs(code)
+        if out is not None:
+            out["costs"] = c
+        for name, key in (("교육과정 원비 합계(월)", "교육과정"),
+                          ("방과후 원비 합계(월)", "방과후")):
+            line = _cost_total_line(c[key])
+            if line:
+                print(f"- **{name}**: {line}")
+        paid = []
+        for tname, table in (("교육과정", c["교육과정"]), ("방과후", c["방과후"])):
+            for label, row in table.items():
+                if label.startswith(("합계", "소계")):
+                    continue
+                vals = sorted({v for v in row["금액"].values() if v})
+                if not vals:
+                    continue
+                amt = (f"{vals[0]:,}원" if len(vals) == 1
+                       else f"{vals[0]:,}~{vals[-1]:,}원")
+                cyc = (f"/{row['결제주기']}"
+                       if row.get("결제주기") and row["결제주기"] != "-" else "")
+                paid.append(f"{tname} {label} {amt}{cyc}")
+        print(f"- **부담금 있는 항목**: {' · '.join(paid) if paid else '없음(전액 학부모 부담 0원)'}")
+        sp = c.get("특성화")
+        if sp is None:
+            print("- 특성화 활동비: 표를 읽지 못했습니다(화면 변경 가능성) — 원본에서 확인")
+        elif sp:
+            fee = sum(p["월부담금"] or 0 for p in sp)
+            note = "전액 무료" if fee == 0 else f"월 부담금 합계 {fee:,}원"
+            print(f"- **특성화 활동**: {len(sp)}개 프로그램, {note}")
+        print("- ※ 0원 = 과정은 운영하되 학부모 부담 없음 / '-' = 해당 연령 과정 없음")
+        print(f"  - 기준: {c.get('기준') or '?'} · 원본: {c['url']}")
+    except kinderweb.WebError as e:
+        print(f"- ⚠ 원비 조회 실패: {e}")
+        print(f"  - 직접 확인: {kinderweb.page_url('cost', code)}")
+    print()
+
+
 # ------------------------------------------------------------ cmd: profile
 PROFILE_SECTIONS = [
     ("building", None), ("classArea", None), ("lessonDay", None),
@@ -877,6 +960,13 @@ def cmd_profile(args):
         out = {"basicInfo2": b}
         for ep, v in sections.items():
             out[ep] = v if isinstance(v, list) else {"status": v}
+        if getattr(args, "web", False):
+            try:
+                import kinderweb
+                out["web"] = {"violations": kinderweb.get_violations(b["kindercode"]),
+                              "costs": kinderweb.get_costs(b["kindercode"])}
+            except Exception as e:  # noqa: BLE001 — 부가 정보라 본체를 막지 않는다
+                out["web"] = {"error": str(e)}
         print(json.dumps(out, ensure_ascii=False, indent=1))
         return
 
@@ -939,6 +1029,9 @@ def cmd_profile(args):
         print("- 자차 등하원이라면 **유치원 앞에 잠시 세울 수 있는지**가 관건입니다. "
               "이 정보는 어떤 공시·API에도 없으니 로드뷰로 길 폭과 갓길을 직접 보세요.")
         print()
+
+    if getattr(args, "web", False):
+        render_web_extras(b)
 
     print("## 기본현황")
     for line in render_kv(b):
@@ -1279,6 +1372,8 @@ def main():
     sp = sub.add_parser("profile", help="유치원 1곳 종합 리포트")
     add_common(sp)
     sp.add_argument("name", help="유치원명(부분일치) 또는 kindercode")
+    sp.add_argument("--web", action="store_true",
+                    help="원비·시정명령 이력을 유치원알리미 웹에서 함께 조회(수 초 추가)")
     sp.set_defaults(func=cmd_profile)
 
     sp = sub.add_parser("compare", help="여러 유치원 비교표")
