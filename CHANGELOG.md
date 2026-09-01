@@ -1,0 +1,42 @@
+# 변경 이력
+
+이 프로젝트는 [유의적 버전](https://semver.org/lang/ko/)을 따릅니다.
+형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/)를 따릅니다.
+
+## [1.0.0] - 2026-09-01
+
+최초 공개 릴리스.
+
+### Added
+
+- 유치원알리미 Open API 14개 공시 항목을 조회하는 CLI (`kinderinfo.py`).
+  파이썬 표준 라이브러리만 사용합니다.
+  - `search` — 지역별 유치원 검색. 연령반·설립유형·이름 필터, 충원율/정원 정렬
+  - `profile` — 유치원 1곳의 공시 항목 종합 리포트와 파생 지표
+  - `compare` — 여러 유치원의 핵심 지표 비교표
+  - `raw` — 엔드포인트 원본 JSON
+  - `discover` — 시군구 코드 자동 탐색. API가 코드표를 제공하지 않아 직접 훑습니다
+  - `regions` — 저장된 지역 코드 목록
+- 파생 지표: 정원 충원율, 연령별 학급당 원아 수, 교사 근속 추정 평균과 분포,
+  원아 1인당 교실면적, CCTV 실내외 대수, 통학차량, 방과후과정 참여율
+- `--target` 옵션. `.env`의 `CHILD_BIRTH_YM`으로 입학 학년도와 연령반을 자동 계산합니다
+  (만3세반 입학 학년도 = 출생연도 + 4).
+- `--age 3|4|5` 옵션으로 대상 연령반 지정.
+- MCP 서버 (`mcp_server.py`). Claude Code와 Codex 양쪽에서 같은 파일로 동작합니다.
+  도구 6종: `search_kindergartens`, `kindergarten_profile`, `compare_kindergartens`,
+  `raw_data`, `list_regions`, `discover_region`.
+- Claude Code / Codex 공용 스킬과 배포 스크립트 (`sync_skill.py`).
+- 초보자 설치·사용을 단계별로 안내하는 에이전트 문서 (`AGENTS.md`).
+- API 응답 디스크 캐시 (기본 7일). `--fresh`로 우회합니다.
+
+### Security
+
+- API 인증키를 `.env`로 분리했습니다. 우선순위는 환경변수 → `.env` → `config.json`(구버전 호환)이며,
+  `.env`·`config.json`·`cache/`·`sgg_codes.json`은 `.gitignore`로 제외됩니다.
+
+### Fixed
+
+- 인증키가 잘못된 경우 API가 `DENIED`를 반환하는데, 이를 "공시 항목 점검 중"으로
+  잘못 안내하던 문제. 이제 키 문제와 항목 점검을 구분해 각각의 조치를 안내합니다.
+
+[1.0.0]: https://github.com/kaicot/kaic-kinder-info/releases/tag/v1.0.0

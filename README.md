@@ -1,0 +1,153 @@
+# kaic-kinder-info
+
+교육부 **유치원알리미**([e-childschoolinfo.moe.go.kr](https://e-childschoolinfo.moe.go.kr)) Open API로
+전국 유치원을 **검색·비교·심층조회**하는 명령줄 도구입니다.
+
+유치원을 고를 때 알리미 사이트를 한 곳씩 눌러 가며 비교하는 게 번거로워서 만들었습니다.
+공시 항목 14종을 한 번에 끌어와 표로 정리하고, 충원율·교사 근속·학급당 원아 수 같은
+**직접 계산해야 알 수 있는 지표**를 자동으로 뽑아 줍니다.
+
+- 설치할 패키지가 없습니다 — 파이썬 표준 라이브러리만 씁니다
+- **Claude Code와 Codex**에서 스킬·MCP로 바로 쓸 수 있습니다
+- AI 에이전트가 초보자의 설치를 처음부터 끝까지 안내하도록 [AGENTS.md](AGENTS.md)를 넣어 두었습니다
+
+> 교육부·유치원알리미와 무관한 **비공식 개인 프로젝트**입니다.
+> 데이터는 유치원알리미 공시 자료를 그대로 보여줄 뿐이며, 정확성은 원 공시를 따릅니다.
+
+## 빠른 시작
+
+```bash
+git clone https://github.com/kaicot/kaic-kinder-info.git
+cd kaic-kinder-info
+
+cp .env.example .env     # Windows: copy .env.example .env
+# .env 를 열어 KINDER_API_KEY 에 발급받은 인증키를 붙여 넣으세요
+
+python kinderinfo.py search 11680 --limit 3 --fresh   # 서울 강남구로 동작 확인
+```
+
+**인증키 발급**: [유치원알리미 → 자료실 → OPEN API](https://e-childschoolinfo.moe.go.kr/openApi/openApiIntro.do)
+에서 신청합니다. 서비스 목록에서 *"유치원 기본현황 정보 조회"* 를 선택하세요.
+심의가 자동승인이면 바로 발급됩니다.
+
+> **AI 에이전트에게 맡겨도 됩니다.** Claude Code나 Codex에 이 저장소 주소를 주고
+> "이거 설치해줘"라고 하면 [AGENTS.md](AGENTS.md)를 읽고 단계별로 안내해 줍니다.
+
+## 사용법
+
+```bash
+# 지역별 검색 — 시도 전체, 시군구, 또는 5자리 코드
+python kinderinfo.py search "서울 강남구"
+python kinderinfo.py search 11680
+
+# 연령반으로 좁히기 (만 3~5세)
+python kinderinfo.py search "서울 강남구" --age 3
+
+# 아이 생년월(.env의 CHILD_BIRTH_YM)로 입학 연령반 자동 계산
+python kinderinfo.py search "서울 강남구" --target
+
+# 공립만, 정원 많은 순
+python kinderinfo.py search "대구 수성구" --age 3 --estab 공립 --sort size
+
+# 한 곳의 공시 항목 14종 종합 리포트
+python kinderinfo.py profile "서울 강남구" 강남유정
+
+# 여러 곳 비교표
+python kinderinfo.py compare "서울 강남구" "강남유정,개현초등학교병설"
+
+# 원본 JSON / 저장된 지역 / 새 지역 코드 탐색
+python kinderinfo.py raw basicInfo2 11680
+python kinderinfo.py regions
+python kinderinfo.py discover 경남        # 경기도는: discover 경기 --full
+```
+
+공통 옵션: `--fresh`(7일 캐시 무시), `--json`(기계용 원자료), `--limit N`
+
+### 지역 지정 방법
+
+이 API는 **시군구 코드가 필수**인데 코드표를 공개하지 않습니다. 그래서 `discover`가
+코드 범위를 훑어 유효한 코드를 찾아 `sgg_codes.json`에 저장합니다. 시도 이름만 입력해도
+자동으로 탐색이 돌기 때문에 보통은 신경 쓰지 않아도 됩니다.
+
+| 입력 | 의미 |
+|---|---|
+| `11680` | 시군구 코드 직접 지정 (탐색 불필요, 가장 빠름) |
+| `"서울 강남구"` | 시도 + 시군구 |
+| `강남구` | 시군구만 (저장된 지역에서 유일할 때) |
+| `서울` | 시도 전체 |
+
+### 계산해 주는 지표
+
+원본 공시에는 없고 이 도구가 계산하는 값들입니다.
+
+- **정원 충원율** — 전체 원아 수 ÷ 인가 정원
+- **연령별 학급당 원아 수** — 아이 한 명이 받는 관심의 대략적 척도
+- **교사 근속 추정 평균과 분포** — 공시 구간(1년 미만 ~ 6년 이상)의 중간값 가중 **추정치**입니다.
+  "1년 미만 비율"이 높으면 이직이 잦다는 신호로 볼 수 있습니다
+- **원아 1인당 교실면적**, CCTV 실내외 대수, 통학차량 운행 대수, 방과후과정 참여율
+
+### 조회하는 공시 항목
+
+기본현황, 건물현황, 교실면적, 교직원현황, 수업일수, 급식운영, 통학차량, 근속연수,
+환경위생 관리, 안전점검·교육, 공제회 가입, 보험별 가입, 방과후 과정 편성·운영.
+
+교육부가 특정 항목을 점검 중이면 그 항목만 `점검 중`으로 표시되고 나머지는 정상 조회됩니다.
+
+## AI 에이전트에서 쓰기
+
+### MCP 서버
+
+등록해 두면 "강남구에 만3세반 있는 유치원 알려줘"처럼 **말로 물어보는 것만으로** 조회됩니다.
+`mcp` 패키지가 필요합니다(`pip install mcp`).
+
+```bash
+# Claude Code
+claude mcp add --scope user kaic-kinder-info -- "<파이썬 절대경로>" "<저장소 경로>/mcp_server.py"
+
+# Codex
+codex mcp add kaic-kinder-info -- "<파이썬 절대경로>" "<저장소 경로>/mcp_server.py"
+```
+
+> **`python`이라고만 쓰지 마세요.** Windows에서는 Microsoft Store 스텁으로 잡혀
+> `CONNECTION_CLOSED`로 실패합니다. `where python` / `which python3`로 절대 경로를 확인해 쓰세요.
+
+노출되는 도구: `search_kindergartens`, `kindergarten_profile`, `compare_kindergartens`,
+`raw_data`, `list_regions`, `discover_region`
+
+### 스킬
+
+```bash
+python sync_skill.py
+```
+
+`~/.claude/skills/`와 `~/.codex/skills/` 양쪽에 배포됩니다. 스킬에는 명령어 사용법뿐 아니라
+**결과 해석 기준**(충원율을 어떻게 읽을지, 근속 평균이 추정치라는 점 등)이 들어 있어,
+에이전트가 숫자를 단정적으로 해석하지 않도록 잡아 줍니다.
+
+## 알아두면 좋은 것
+
+- 공시 자료는 **1년에 두 번**(4월 말, 10월 말경) 갱신됩니다. 출력 상단에 `2026년 1차 공시`처럼
+  기준이 표시됩니다. 원서 접수 직전에는 `--fresh`로 최신 자료를 다시 받으세요.
+- **원비·모집요강·경쟁률·통학구역은 이 API에 없습니다.**
+  [처음학교로](https://www.go-firstschool.go.kr)나 유치원에 직접 확인해야 합니다.
+- 유치원 원서 접수(처음학교로)는 보통 입학 전해 **11월**입니다.
+- 혼합연령 학급에도 해당 연령 아이가 포함될 수 있으므로, 연령 필터에 걸리지 않은 곳도
+  `profile`로 한 번 더 확인해 보세요.
+
+## 요구 사항
+
+- 파이썬 3.9 이상 (표준 라이브러리만 사용)
+- 유치원알리미 Open API 인증키
+- MCP 서버를 쓸 경우에만 `mcp` 패키지
+
+## 문서
+
+| 문서 | 내용 |
+|---|---|
+| [AGENTS.md](AGENTS.md) | AI 에이전트용 — 초보자 설치 안내 절차, 문제 해결, 개발 규약 |
+| [CHANGELOG.md](CHANGELOG.md) | 버전별 변경 이력 |
+| [skill/kaic-kinder-info/SKILL.md](skill/kaic-kinder-info/SKILL.md) | 에이전트가 이 도구를 사용할 때의 지침 |
+
+## 라이선스
+
+[MIT](LICENSE)
