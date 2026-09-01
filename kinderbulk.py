@@ -153,7 +153,7 @@ def _find_row(data, name, addr_hint):
 def series(sido_code, name, addr, timings=None, delay=0.3):
     """유치원 1곳의 차수별 지표 시리즈.
 
-    반환: [{"timing","label","정원","원아","충원율","원아3","원아4","원아5",
+    반환: [{"timing","label","정원","원아","충원율","원아3","원아4","원아5","혼합원아",
             "교사","근속1년미만"} | 값 없으면 None 필드] — 차수 오름차순.
     addr 의 앞 두 토큰(시도+시군구)을 동명이원 구분 힌트로 쓴다.
     """
@@ -177,6 +177,7 @@ def series(sido_code, name, addr, timings=None, delay=0.3):
                 for age, col in ((3, "만3세원아수"), (4, "만4세원아수"),
                                  (5, "만5세원아수")):
                     row[f"원아{age}"] = _num(r[h.index(col)])
+                row["혼합원아"] = _num(r[h.index("혼합원아수")])
         except BulkError as e:
             row["오류"] = str(e)
         try:

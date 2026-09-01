@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """유치원알리미 '웹 화면' 조회 — Open API 에 없는 항목을 공시 페이지에서 읽는다.
 
-Open API(14개 항목)에는 **원비**와 **시정명령 이력**이 없다. 같은 내용이
+Open API(14개 항목)에는 **혼합반 세부 연령**, **원비**, **시정명령 이력**이 없다. 같은 내용이
 유치원알리미 웹 상세 페이지에는 공시된다(공공누리 제1유형, robots.txt 전면 허용).
 이 모듈은 그 페이지를 읽는다. **인증키가 필요 없다.**
 
@@ -18,6 +18,7 @@ Open API(14개 항목)에는 **원비**와 **시정명령 이력**이 없다. �
 파이썬 표준 라이브러리만 사용한다.
 """
 import json
+import hashlib
 import re
 import sys
 import time
@@ -25,15 +26,23 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from html.parser import HTMLParser
+from datetime import datetime, timedelta
+from pathlib import Path
 
 BASE = "https://e-childschoolinfo.moe.go.kr"
+ROOT = Path(__file__).resolve().parent
+WEB_CACHE = ROOT / "cache" / "web"
 PAGES = {
     "cost": ("kinderEducateAndCost", "교육과정 교육비용"),
     "violation": ("kinderViolation", "위반내용"),
     "operate": ("kinderOperate", "유치원 평가"),
+    "classes": ("kinderChildAndStaff", "연령별 학급 현황"),
 }
 TIMEOUT = 25
+CACHE_DAYS = 7
+REQUEST_INTERVAL = 0.3
 AGE_HEADS = {3: "만 3세", 4: "만 4세", 5: "만 5세"}
+_last_request = 0.0
 
 
 class WebError(Exception):
@@ -145,8 +154,36 @@ def page_url(page, itt_id):
     return f"{BASE}/kinderMt/{PAGES[page][0]}.do?ittId={urllib.parse.quote(str(itt_id))}"
 
 
-def fetch(page, itt_id):
+def _cache_file(page, itt_id):
+    digest = hashlib.sha256(str(itt_id).encode("utf-8")).hexdigest()[:20]
+    return WEB_CACHE / f"{page}_{digest}.html"
+
+
+def clear_cache():
+    """웹 화면 캐시만 비운다. 과거 벌크·자차 경로 캐시는 건드리지 않는다."""
+    n = 0
+    if WEB_CACHE.exists():
+        for path in WEB_CACHE.glob("*.html"):
+            path.unlink()
+            n += 1
+    return n
+
+
+def fetch(page, itt_id, fresh=False):
     path, marker = PAGES[page]
+    cache = _cache_file(page, itt_id)
+    if not fresh and cache.exists():
+        young = (datetime.now().timestamp() - cache.stat().st_mtime
+                 < timedelta(days=CACHE_DAYS).total_seconds())
+        if young:
+            html = cache.read_text(encoding="utf-8")
+            if marker in html:
+                return html
+
+    global _last_request
+    wait = REQUEST_INTERVAL - (time.monotonic() - _last_request)
+    if wait > 0:
+        time.sleep(wait)
     req = urllib.request.Request(
         page_url(page, itt_id),
         headers={"User-Agent": "Mozilla/5.0 (kaic-kinder-info)",
@@ -154,11 +191,14 @@ def fetch(page, itt_id):
     try:
         with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
             html = r.read().decode("utf-8", "replace")
+        _last_request = time.monotonic()
     except (urllib.error.URLError, TimeoutError) as e:
         raise WebError(f"유치원알리미 접속 실패: {e}")
     if marker not in html:
         raise WebError("페이지를 열었지만 기대한 내용이 없습니다 "
                        "(유치원 코드가 다르거나 화면이 바뀐 듯합니다)")
+    WEB_CACHE.mkdir(parents=True, exist_ok=True)
+    cache.write_text(html, encoding="utf-8")
     return html
 
 
@@ -239,8 +279,8 @@ def parse_costs(html):
     }
 
 
-def get_costs(itt_id):
-    out = parse_costs(fetch("cost", itt_id))
+def get_costs(itt_id, fresh=False):
+    out = parse_costs(fetch("cost", itt_id, fresh=fresh))
     out["url"] = page_url("cost", itt_id)
     return out
 
@@ -268,8 +308,8 @@ def parse_violations(html):
     return {"clean": False, "items": items}
 
 
-def get_violations(itt_id):
-    html = fetch("violation", itt_id)
+def get_violations(itt_id, fresh=False):
+    html = fetch("violation", itt_id, fresh=fresh)
     out = parse_violations(html)
     out["기준"] = _basis(html)
     out["url"] = page_url("violation", itt_id)
@@ -301,9 +341,90 @@ def parse_evaluation(html):
     return {"실시": years, "보고서": pdfs}
 
 
-def get_evaluation(itt_id):
-    out = parse_evaluation(fetch("operate", itt_id))
+def get_evaluation(itt_id, fresh=False):
+    out = parse_evaluation(fetch("operate", itt_id, fresh=fresh))
     out["url"] = page_url("operate", itt_id)
+    return out
+
+
+# --------------------------------------------------------- 연령별 학급 구성
+CLASS_COLUMNS = {
+    "만3세": ("만3세반",),
+    "만4세": ("만4세반",),
+    "만5세": ("만5세반",),
+    "3-4세": ("만3~4세", "만3-4세"),
+    "4-5세": ("만4~5세", "만4-5세"),
+    "3-5세": ("만3~5세", "만3-5세"),
+    "특수": ("특수학급",),
+}
+
+
+def _compact(text):
+    return re.sub(r"\s+", "", str(text or "")).replace("∼", "~")
+
+
+def parse_age_classes(html):
+    """웹 공시의 전용·혼합 연령별 학급/정원/현원을 구조화한다.
+
+    같은 제목 아래 과거 시계열 표도 있으므로, '학급 수·정원·현원' 행과
+    '만 3~4세' 열을 함께 가진 현재 학급표만 선택한다.
+    """
+    candidates = []
+    for heading, grid in tables_of(html):
+        if "연령별 학급 현황" not in heading or not grid:
+            continue
+        flat = " ".join(" ".join(r) for r in grid)
+        if all(label in flat for label in ("학급 수", "정원", "현원")) and "만 3~4세" in flat:
+            candidates.append(grid)
+    if len(candidates) != 1:
+        raise ParseChanged("현재 연령별 학급 현황 표를 하나로 식별하지 못했습니다")
+    grid = candidates[0]
+
+    data_start = next((i for i, r in enumerate(grid)
+                       if any(_compact(c) == "학급수" for c in r)), None)
+    if data_start is None or data_start < 1:
+        raise ParseChanged("연령별 학급 표에서 '학급 수' 행을 찾지 못했습니다")
+    header = [_compact(c) for c in grid[data_start - 1]]
+    cols = {}
+    for key, aliases in CLASS_COLUMNS.items():
+        aliases = tuple(_compact(a) for a in aliases)
+        col = next((i for i, h in enumerate(header) if h in aliases), None)
+        if col is None:
+            raise ParseChanged(f"연령별 학급 표에서 '{key}' 열을 찾지 못했습니다")
+        cols[key] = col
+
+    rows = {}
+    for label in ("학급 수", "정원", "현원"):
+        want = _compact(label)
+        row = next((r for r in grid[data_start:]
+                    if any(_compact(c) == want for c in r)), None)
+        if row is None:
+            raise ParseChanged(f"연령별 학급 표에서 '{label}' 행을 찾지 못했습니다")
+        rows[label] = row
+
+    classes = {}
+    for key, col in cols.items():
+        classes[key] = {
+            "학급": _num(rows["학급 수"][col]) if col < len(rows["학급 수"]) else None,
+            "정원": _num(rows["정원"][col]) if col < len(rows["정원"]) else None,
+            "현원": _num(rows["현원"][col]) if col < len(rows["현원"]) else None,
+        }
+    if not any((v["학급"] or 0) > 0 for v in classes.values()):
+        raise ParseChanged("연령별 학급 수가 하나도 숫자로 읽히지 않습니다")
+
+    total_row = rows["정원"]
+    current_row = rows["현원"]
+    return {
+        "학급": classes,
+        "인가총정원": _num(total_row[0]) if total_row else None,
+        "총현원": _num(current_row[1]) if len(current_row) > 1 else None,
+        "기준": _basis(html),
+    }
+
+
+def get_age_classes(itt_id, fresh=False):
+    out = parse_age_classes(fetch("classes", itt_id, fresh=fresh))
+    out["url"] = page_url("classes", itt_id)
     return out
 
 
@@ -315,9 +436,10 @@ SELFTEST_ID = "34140010-58e8-44b4-9e91-49d5eb6669e1"   # 강남유정유치원
 def selftest(itt_id=SELFTEST_ID, verbose=True):
     """공시 화면 구조가 그대로인지 확인. 전부 통과하면 True."""
     checks = [
-        ("원비 표 파싱", lambda: parse_costs(fetch("cost", itt_id))),
-        ("시정명령 표 파싱", lambda: parse_violations(fetch("violation", itt_id))),
-        ("유치원 평가 표 파싱", lambda: parse_evaluation(fetch("operate", itt_id))),
+        ("원비 표 파싱", lambda: parse_costs(fetch("cost", itt_id, fresh=True))),
+        ("시정명령 표 파싱", lambda: parse_violations(fetch("violation", itt_id, fresh=True))),
+        ("유치원 평가 표 파싱", lambda: parse_evaluation(fetch("operate", itt_id, fresh=True))),
+        ("연령별 학급 표 파싱", lambda: parse_age_classes(fetch("classes", itt_id, fresh=True))),
     ]
     ok = True
     for name, fn in checks:
@@ -332,7 +454,7 @@ def selftest(itt_id=SELFTEST_ID, verbose=True):
         time.sleep(0.3)
     if verbose:
         print("→ 정상: 공시 화면 구조가 그대로입니다." if ok else
-              "→ 실패: 유치원알리미 화면이 바뀐 것 같습니다. 원비·시정명령은 "
+              "→ 실패: 유치원알리미 화면이 바뀐 것 같습니다. 학급 구성·원비·시정명령은 "
               "원본 링크로 직접 확인하세요.")
     return ok
 

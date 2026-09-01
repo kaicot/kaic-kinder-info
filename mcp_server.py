@@ -31,7 +31,8 @@ mcp = FastMCP(
     instructions=(
         f"유치원알리미(교육부) 공시 데이터 조회 도구 v{kinderinfo.__version__}. "
         "지역별 유치원 검색, 1곳 종합 리포트, 여러 곳 비교표를 마크다운으로 돌려준다. "
-        "원비·모집요강·경쟁률은 이 데이터에 없으므로 지어내지 말 것."),
+        "원비·연령별 혼합반 구성·시정명령은 웹 공시로 확인할 수 있다. "
+        "모집요강·경쟁률은 데이터에 없으므로 지어내지 말 것."),
 )
 _lock = threading.Lock()  # redirect_stdout 이 전역이라 동시 호출 직렬화
 
@@ -66,7 +67,8 @@ def _run(*argv: str) -> str:
 @mcp.tool()
 def search_kindergartens(region: str, age: int = 0, target: bool = False,
                          estab: str = "", name: str = "", near_km: float = 0,
-                         road: bool = False, sort: str = "name") -> str:
+                         road: bool = False, sort: str = "name",
+                         no_web: bool = False) -> str:
     """지역별 유치원 검색 — 학급/원아/정원/충원율/운영시간을 마크다운 표로 반환.
 
     Args:
@@ -80,6 +82,8 @@ def search_kindergartens(region: str, age: int = 0, target: bool = False,
               "차로 몇 분?", "실제로 얼마나 걸려?" 류 질문이면 True로 호출할 것
         sort: 'name'(이름순) | 'size'(해당 연령 정원 많은순) | 'fill'(충원율순)
               | 'dist'(가까운 순 — road=True면 도로 거리 기준)
+        no_web: True면 혼합반의 세부 연령 구성을 확인하지 않고 '미확인' 후보로 포함.
+                기본 False가 정확하며, 빠른 임시 검색에만 True 사용
     """
     args = ["search", region, "--sort", sort]
     if target:
@@ -90,6 +94,8 @@ def search_kindergartens(region: str, age: int = 0, target: bool = False,
         args += ["--near", str(near_km)]
     if road:
         args.append("--road")
+    if no_web:
+        args.append("--no-web")
     if estab:
         args += ["--estab", estab]
     if name:
@@ -105,8 +111,9 @@ def kindergarten_profile(region: str, name: str, web: bool = False) -> str:
     Args:
         region: '서울 강남구' 같은 지역 (검색 범위)
         name: 유치원명 부분일치(예: '햇살') 또는 kindercode
-        web: True면 원비·시정명령 이력을 유치원알리미 웹에서 함께 조회(수 초 추가).
-             원비나 행정처분을 물으면 True로 호출할 것
+        web: True면 연령별 전용·혼합 학급 구성, 원비·시정명령 이력을
+             유치원알리미 웹에서 함께 조회(수 초 추가). 혼합반, 원비,
+             행정처분을 물으면 True로 호출할 것
     """
     args = ["profile", region, name]
     if web:
@@ -160,7 +167,8 @@ def kindergarten_report(region: str = "", names: str = "", age: int = 0,
                         target: bool = False, no_web: bool = False) -> str:
     """최종 후보 브리핑 — 비교표 + 유치원별 상세 + 추이 + **방문·전화 질문지**를
     한 문서로 만든다. 후보를 좁힌 뒤 "브리핑 만들어줘", "방문 때 뭘 물어볼까"
-    류 요청에 사용. 원비·시정명령·평가(웹 공시)와 충원율 추이가 기본 포함.
+    류 요청에 사용. 전용·혼합 학급 구성, 원비·시정명령·평가(웹 공시)와
+    충원율·혼합반 원아 추이가 기본 포함.
 
     Args:
         region: '서울 강남구' 같은 지역. **비우면 save_shortlist 로 저장한 후보 사용**
@@ -204,7 +212,7 @@ def save_shortlist(region: str = "", names: str = "", show: bool = False,
 @mcp.tool()
 def kindergarten_trend(region: str = "", names: str = "",
                        periods: int = 5) -> str:
-    """후보 유치원들의 **추이** — 충원율·만3세 원아·전체 원아/정원·교사 근속
+    """후보 유치원들의 **추이** — 충원율·만3세 전용반 원아·혼합반 원아·전체 원아/정원·교사 근속
     1년 미만 비율을 최근 N개 공시 차수(기본 5개 ≈ 3년)로 보여준다.
     "추세/추이/변화 어때?", "좋아지고 있어?" 류 질문에 사용.
 

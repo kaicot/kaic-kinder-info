@@ -25,7 +25,7 @@ import urllib.request
 from datetime import datetime, timedelta
 from pathlib import Path
 
-__version__ = "1.7.0"
+__version__ = "1.8.0"
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.stderr.reconfigure(encoding="utf-8", errors="replace")
@@ -395,6 +395,11 @@ def cmd_refresh(args):
         for f in CACHE_DIR.glob("*.json"):
             f.unlink()
             n += 1
+    try:
+        import kinderweb
+        n += kinderweb.clear_cache()
+    except (ImportError, OSError):
+        pass
     print(f"캐시 {n}개 파일을 비웠습니다. 다음 조회부터 최신 공시를 새로 받습니다."
           " (과거 차수 벌크 자료는 불변이라 보존됩니다)")
 
@@ -897,10 +902,38 @@ def cmd_search(args):
     if args.estab:
         rows = [r for r in rows
                 if str(r.get("establish", "")).startswith(args.estab)]
+    age_details = {}   # kindercode -> 웹 학급표 | "unverified"
     if age:
-        rows = [r for r in rows
-                if (to_int(r.get(f"clcnt{age}")) or 0) > 0
-                or (to_int(r.get(f"ag{age}fpcnt")) or 0) > 0]
+        kept = []
+        kinderweb = None
+        if not args.no_web:
+            try:
+                import kinderweb as _kinderweb
+                kinderweb = _kinderweb
+            except ImportError:
+                pass
+        for r in rows:
+            code = r.get("kindercode")
+            direct = ((to_int(r.get(f"clcnt{age}")) or 0) > 0 or
+                      (to_int(r.get(f"ag{age}fpcnt")) or 0) > 0)
+            if direct:
+                kept.append(r)
+                continue
+            if (to_int(r.get("mixclcnt")) or 0) <= 0:
+                continue
+            if kinderweb is None:
+                age_details[code] = "unverified"
+                kept.append(r)  # 불확실할 때는 후보를 조용히 버리지 않는다
+                continue
+            try:
+                detail = kinderweb.get_age_classes(code, fresh=args.fresh)
+                if mixed_classes_for_age(detail, age):
+                    age_details[code] = detail
+                    kept.append(r)
+            except kinderweb.WebError:
+                age_details[code] = "unverified"
+                kept.append(r)  # 화면 개편/네트워크 실패도 누락보다 경고가 안전하다
+        rows = kept
 
     home = home_coords()
     road = {}   # kindercode -> (km, 분, 우회율)
@@ -927,10 +960,18 @@ def cmd_search(args):
                             distance_from_home(r) or 1e9) <= limit]
 
     size_key = f"ag{age or 3}fpcnt"
+
+    def age_capacity(r):
+        cap = to_int(r.get(size_key)) or 0
+        detail = age_details.get(r.get("kindercode"))
+        if isinstance(detail, dict) and age:
+            cap += sum(v.get("정원") or 0 for _, v in mixed_classes_for_age(detail, age))
+        return cap
+
     keyf = {
         "name": lambda r: str(r.get("kindername", "")),
-        "size": lambda r: -(to_int(r.get(size_key)) or 0),
-        "size3": lambda r: -(to_int(r.get(size_key)) or 0),   # 구 옵션 별칭
+        "size": lambda r: -age_capacity(r),
+        "size3": lambda r: -age_capacity(r),   # 구 옵션 별칭
         "fill": lambda r: -(fill_rate(r) or -1),
         "dist": (lambda r: (road.get(r["kindercode"], (None,))[0]
                             or distance_from_home(r) or 1e9)) if road else
@@ -942,7 +983,13 @@ def cmd_search(args):
         rows = rows[:args.limit]
 
     if args.json:
-        print(json.dumps(rows, ensure_ascii=False, indent=1))
+        out = []
+        for r in rows:
+            item = dict(r)
+            if r.get("kindercode") in age_details:
+                item["_age_class_detail"] = age_details[r["kindercode"]]
+            out.append(item)
+        print(json.dumps(out, ensure_ascii=False, indent=1))
         return
     reg_label = ", ".join(dict.fromkeys(n for _, _, n in regions))
     pb = fmt_pbnttmng(rows[0].get("pbnttmng")) if rows else ""
@@ -952,7 +999,7 @@ def cmd_search(args):
         print(f"대상: {target_note}")
     flt = []
     if age:
-        flt.append(f"만{age}세반 있는 곳만")
+        flt.append(f"만{age}세 포함(전용반+혼합반)")
     if args.estab:
         flt.append(f"설립유형={args.estab}")
     if args.name:
@@ -979,9 +1026,15 @@ def cmd_search(args):
                                              if ratio else "")
                 if km is not None else "-"))
         if age:
-            cell = (f"{to_int(r.get(f'clcnt{age}')) or 0}학급/"
-                    f"{to_int(r.get(f'ppcnt{age}')) or 0}명/"
-                    f"{to_int(r.get(f'ag{age}fpcnt')) or 0}명")
+            detail = age_details.get(r.get("kindercode"))
+            if detail == "unverified":
+                cell = "혼합반 구성 미확인 ⚠"
+            elif isinstance(detail, dict):
+                cell = mixed_age_summary(detail, age, compact=True)
+            else:
+                cell = (f"{to_int(r.get(f'clcnt{age}')) or 0}학급/"
+                        f"{to_int(r.get(f'ppcnt{age}')) or 0}명/"
+                        f"{to_int(r.get(f'ag{age}fpcnt')) or 0}명")
         else:
             cell = "/".join(str(to_int(r.get(f"clcnt{a}")) or 0)
                             for a in AGE_CLASSES)
@@ -993,8 +1046,12 @@ def cmd_search(args):
               f"| {mix or '-'} | {whole} | {r.get('opertime') or '-'} "
               f"| {r.get('telno') or '-'} |")
     print()
-    print("혼합연령 학급에도 해당 연령이 포함될 수 있으니, 관심 유치원은 "
-          "profile 로 상세 확인을 권장합니다.")
+    if age:
+        print("* 혼합반 정원·현원은 포함 연령 전체의 합계입니다. 실제 만"
+              f"{age}세 모집 인원은 유치원에 확인하세요.")
+        if any(v == "unverified" for v in age_details.values()):
+            print("⚠ 웹 학급표를 확인하지 못한 곳은 후보에서 빼지 않고 '구성 미확인'으로 "
+                  "남겼습니다. profile --web 또는 유치원 전화로 확인하세요.")
     if home and not road:
         print("\n직선거리는 **언덕과 도로를 무시한 하한값**입니다. 실측하면 우회율이 "
               "1.0~3.1배까지 벌어집니다 — `--road` 를 붙이면 실제 자차 거리를 봅니다.")
@@ -1022,7 +1079,50 @@ def _cost_total_line(table):
     return " / ".join(f"만{age}세 {fmt_won(a.get(age))}" for age in AGE_CLASSES)
 
 
-def render_web_extras(b, out=None):
+MIXED_KEYS_BY_AGE = {
+    3: ("3-4세", "3-5세"),
+    4: ("3-4세", "4-5세", "3-5세"),
+    5: ("4-5세", "3-5세"),
+}
+
+
+def mixed_classes_for_age(age_classes, age):
+    """현재 웹 학급표에서 age 를 포함하는 혼합반 목록."""
+    classes = (age_classes or {}).get("학급") or {}
+    return [(key, classes.get(key) or {}) for key in MIXED_KEYS_BY_AGE[age]
+            if ((classes.get(key) or {}).get("학급") or 0) > 0]
+
+
+def mixed_age_summary(age_classes, age, compact=False):
+    """'3~4세 2학급 + 3~5세 1학급 (합산 정원 68명*)' 형태."""
+    found = mixed_classes_for_age(age_classes, age)
+    if not found:
+        return None
+    parts = [f"{key.replace('-', '~')} {v['학급']}학급" for key, v in found]
+    cap = sum(v.get("정원") or 0 for _, v in found)
+    current = sum(v.get("현원") or 0 for _, v in found)
+    if compact:
+        return (f"혼합 {sum(v['학급'] for _, v in found)}학급/"
+                f"{current}명/{cap}명*")
+    return (" + ".join(parts) +
+            (f" (합산 현원 {current}명·정원 {cap}명*)" if cap else ""))
+
+
+def age_classes_table_lines(age_classes):
+    """profile/report 용 현재 연령별 학급표."""
+    classes = (age_classes or {}).get("학급") or {}
+    labels = (("만3세", "만3세"), ("만4세", "만4세"), ("만5세", "만5세"),
+              ("3-4세", "만3~4세"), ("4-5세", "만4~5세"),
+              ("3-5세", "만3~5세"), ("특수", "특수"))
+    lines = ["| 구분 | 학급 | 현원 | 정원 |", "|---|---:|---:|---:|"]
+    for key, label in labels:
+        v = classes.get(key) or {}
+        lines.append(f"| {label} | {v.get('학급') or '-'} | "
+                     f"{v.get('현원') or '-'} | {v.get('정원') or '-'} |")
+    return lines
+
+
+def render_web_extras(b, out=None, fresh=False):
     """유치원알리미 웹 공시(원비·시정명령)를 profile 에 붙인다.
 
     공식 API 가 아니라서 실패할 수 있다 — 실패해도 리포트의 나머지는 그대로 나오고,
@@ -1031,14 +1131,29 @@ def render_web_extras(b, out=None):
     try:
         import kinderweb
     except ImportError:
-        print("## 웹 공시 — 시정명령·원비\n- ⚠ kinderweb.py 를 찾을 수 없습니다. "
+        print("## 웹 공시 — 연령별 학급·시정명령·원비\n- ⚠ kinderweb.py 를 찾을 수 없습니다. "
               "저장소에서 함께 받아주세요.\n")
         return
     code = b.get("kindercode")
-    print("## 웹 공시 — 시정명령·원비")
+    print("## 웹 공시 — 연령별 학급·시정명령·원비")
 
     try:
-        v = kinderweb.get_violations(code)
+        ac = kinderweb.get_age_classes(code, fresh=fresh)
+        if out is not None:
+            out["age_classes"] = ac
+        print("**현재 연령별 학급 구성**")
+        print()
+        for line in age_classes_table_lines(ac):
+            print(line)
+        print()
+        print("- ※ 혼합반 정원·현원은 포함 연령 전체의 합계입니다.")
+        print(f"- 기준: {ac.get('기준') or '?'} · 원본: {ac['url']}")
+    except kinderweb.WebError as e:
+        print(f"- ⚠ 연령별 학급 조회 실패: {e}")
+        print(f"  - 직접 확인: {kinderweb.page_url('classes', code)}")
+
+    try:
+        v = kinderweb.get_violations(code, fresh=fresh)
         if out is not None:
             out["violations"] = v
         if v["clean"]:
@@ -1055,7 +1170,7 @@ def render_web_extras(b, out=None):
         print(f"  - 직접 확인: {kinderweb.page_url('violation', code)}")
 
     try:
-        c = kinderweb.get_costs(code)
+        c = kinderweb.get_costs(code, fresh=fresh)
         if out is not None:
             out["costs"] = c
         for name, key in (("교육과정 원비 합계(월)", "교육과정"),
@@ -1091,7 +1206,7 @@ def render_web_extras(b, out=None):
         print(f"  - 직접 확인: {kinderweb.page_url('cost', code)}")
 
     try:
-        ev = kinderweb.get_evaluation(code)
+        ev = kinderweb.get_evaluation(code, fresh=fresh)
         done = [y["학년도"].replace("학년도", "") for y in ev.get("실시", [])
                 if y.get("실시") == "실시"]
         pdfs = len(ev.get("보고서", []))
@@ -1185,8 +1300,16 @@ def cmd_profile(args):
         if getattr(args, "web", False):
             try:
                 import kinderweb
-                out["web"] = {"violations": kinderweb.get_violations(b["kindercode"]),
-                              "costs": kinderweb.get_costs(b["kindercode"])}
+                out["web"] = {
+                    "age_classes": kinderweb.get_age_classes(
+                        b["kindercode"], fresh=args.fresh),
+                    "violations": kinderweb.get_violations(
+                        b["kindercode"], fresh=args.fresh),
+                    "costs": kinderweb.get_costs(
+                        b["kindercode"], fresh=args.fresh),
+                    "evaluation": kinderweb.get_evaluation(
+                        b["kindercode"], fresh=args.fresh),
+                }
             except Exception as e:  # noqa: BLE001 — 부가 정보라 본체를 막지 않는다
                 out["web"] = {"error": str(e)}
         print(json.dumps(out, ensure_ascii=False, indent=1))
@@ -1211,7 +1334,7 @@ def cmd_profile(args):
         print()
 
     if getattr(args, "web", False):
-        render_web_extras(b)
+        render_web_extras(b, fresh=args.fresh)
 
     print("## 기본현황")
     for line in render_kv(b):
@@ -1469,13 +1592,14 @@ def trend_lines(ser):
     kb = load_bulk()
     if not isinstance(ser, list):
         return [f"- ⚠ 추이 조회 실패: {(ser or {}).get('error', '?')}"]
-    lines = ["| 차수 | 충원율 | 만3세 원아 | 전체 원아/정원 | 근속 1년 미만 |",
-             "|---|---|---|---|---|"]
+    lines = ["| 차수 | 충원율 | 만3세 전용반 원아 | 혼합반 원아 | 전체 원아/정원 | 근속 1년 미만 |",
+             "|---|---|---|---|---|---|"]
     for r in ser:
-        lines.append("| {} | {} | {} | {} | {} |".format(
+        lines.append("| {} | {} | {} | {} | {} | {} |".format(
             r["label"],
             f"{r['충원율']}%" if r.get("충원율") is not None else "-",
             f"{r['원아3']}명" if r.get("원아3") is not None else "-",
+            f"{r['혼합원아']}명" if r.get("혼합원아") is not None else "-",
             f"{r['원아']}/{r['정원']}" if r.get("원아") is not None else "-",
             f"{r['근속1년미만']}%" if r.get("근속1년미만") is not None else "-"))
     fills = [r.get("충원율") for r in ser if r.get("충원율") is not None]
@@ -1508,7 +1632,9 @@ def cmd_trend(args):
         for line in trend_lines(ser_map[k["kindercode"]]):
             print(line)
     print("\n화살표는 첫 차수와 끝 차수의 단순 비교이며 ±2 이상일 때만 방향을 "
-          "표시합니다. 만3세 원아가 '-'인 차수는 그해 만3세반 미운영일 수 있습니다. "
+          "표시합니다. '만3세 전용반 원아'가 0명이어도 혼합반에 만3세가 포함될 수 "
+          "있습니다. 혼합반 원아는 모든 포함 연령의 합계이며, 현재 구성은 profile --web로 "
+          "확인하세요. "
           "과거 차수 자료는 최초 1회만 내려받아 영구 보관합니다.")
 
 
@@ -1530,7 +1656,8 @@ def cmd_diff(args):
         prev, cur = ser[0], ser[1]
         changes, same = [], []
         for label, key, unit in (("충원율", "충원율", "%p"),
-                                 ("만3세 원아", "원아3", "명"),
+                                 ("만3세 전용반 원아", "원아3", "명"),
+                                 ("혼합반 원아", "혼합원아", "명"),
                                  ("전체 원아", "원아", "명"),
                                  ("정원", "정원", "명"),
                                  ("근속 1년 미만", "근속1년미만", "%p")):
@@ -1586,7 +1713,17 @@ def visit_questions(b, sections, web, sched, age):
 
     if (to_int(b.get(f"clcnt{age}")) or 0) == 0:
         year = next_admission_year()
-        if (to_int(b.get("mixclcnt")) or 0) > 0:
+        age_classes = ((web or {}).get("age_classes")
+                       if isinstance(web, dict) else None)
+        mixed = (mixed_age_summary(age_classes, age)
+                 if isinstance(age_classes, dict) else None)
+        if mixed:
+            qs.append(f"현재 만{age}세는 {mixed}로 운영되는데, {year}학년도 "
+                      f"만{age}세 모집 인원과 담임 배치는 어떻게 되나요?")
+        elif isinstance(age_classes, dict):
+            qs.append(f"현재 공시 학급 구성에는 만{age}세가 포함되지 않는데, "
+                      f"{year}학년도 만{age}세 모집 계획이 있나요?")
+        elif (to_int(b.get("mixclcnt")) or 0) > 0:
             qs.append(f"{year}학년도에 만{age}세를 모집하나요? "
                       f"혼합반이라면 연령 구성이 어떻게 되나요?")
         else:
@@ -1668,10 +1805,14 @@ def cmd_report(args):
             web = {}
             try:
                 import kinderweb
-                web["violations"] = kinderweb.get_violations(code)
-                web["costs"] = kinderweb.get_costs(code)
+                web["age_classes"] = kinderweb.get_age_classes(
+                    code, fresh=args.fresh)
+                web["violations"] = kinderweb.get_violations(
+                    code, fresh=args.fresh)
+                web["costs"] = kinderweb.get_costs(code, fresh=args.fresh)
                 try:
-                    web["eval"] = kinderweb.get_evaluation(code)
+                    web["eval"] = kinderweb.get_evaluation(
+                        code, fresh=args.fresh)
                 except Exception:  # noqa: BLE001 — 평가는 곁가지
                     pass
             except Exception as e:  # noqa: BLE001 — 부가 정보
@@ -1741,6 +1882,12 @@ def cmd_report(args):
         return (f"{len(done)}회 실시 ({', '.join(done[-3:])})"
                 if done else "실시 이력 없음")
 
+    def mixed_cell(k):
+        ac = _web_of(k).get("age_classes")
+        if not isinstance(ac, dict):
+            return None
+        return mixed_age_summary(ac, age) or "없음"
+
     def fill_trend_cell(k):
         ser = trend_map.get(k["kindercode"])
         if not isinstance(ser, list):
@@ -1757,7 +1904,8 @@ def cmd_report(args):
 
     extra = []
     if not args.no_web:
-        extra += [(f"원비 합계(만{age}세, 월)", fee_cell),
+        extra += [(f"만{age}세 포함 혼합반", mixed_cell),
+                  (f"원비 합계(만{age}세, 월)", fee_cell),
                   ("시정명령 이력", violation_cell),
                   ("유치원 평가", eval_cell)]
     extra.append(("방학 합계(모초교 실측)", vacation_cell))
@@ -1789,6 +1937,14 @@ def cmd_report(args):
                       + ("없음" if v.get("clean") else
                          f"⚠ {len(v['items'])}건 — "
                          + " / ".join(it["제목"] for it in v["items"])))
+                ac = web.get("age_classes")
+                if isinstance(ac, dict):
+                    w("**현재 연령별 학급 구성**")
+                    w("")
+                    for line in age_classes_table_lines(ac):
+                        w(line)
+                    w("")
+                    w("- ※ 혼합반 정원·현원은 포함 연령 전체의 합계입니다.")
                 fee = fee_cell(k)
                 if fee:
                     w(f"- **원비(만{age}세)**: {fee} — 상세: {web['costs']['url']}")
@@ -2018,6 +2174,8 @@ def main():
                     help="집에서 N km 이내만 (--road 와 함께면 도로 거리 기준)")
     sp.add_argument("--road", action="store_true",
                     help="자차 도로 거리·시간 조회(직선거리 대신 실제 경로, 키 불필요)")
+    sp.add_argument("--no-web", action="store_true",
+                    help="혼합반 연령 구성 웹 확인 생략(빠르지만 미확인 후보 포함)")
     sp.add_argument("--sort", choices=["name", "size", "fill", "dist", "size3"],
                     default="name",
                     help="정렬: name=이름, size=해당 연령 정원 많은 순, "
