@@ -3,6 +3,16 @@
 이 프로젝트는 [유의적 버전](https://semver.org/lang/ko/)을 따릅니다.
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/)를 따릅니다.
 
+## [1.5.1] - 2026-09-01
+
+### Fixed
+
+- 문서가 v1.5.0을 따라오지 못한 부분 정리.
+  - README의 MCP 도구 목록이 6종으로 남아 있던 것을 8종으로 갱신
+    (`kindergarten_schedule`, `kindergarten_report` 누락 보완).
+  - AGENTS.md 저장소 구조 표에 `neis.py`·`kinderweb.py` 추가.
+  - AGENTS.md 검증 절에 `kinderweb.py selftest`(웹 공시 파서 3종) 추가.
+
 ## [1.5.0] - 2026-09-01
 
 후보를 좁힌 뒤의 마지막 단계 — **한 문서로 정리하고, 방문 가서 무엇을 물을지**까지.

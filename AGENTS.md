@@ -266,8 +266,10 @@ API 원본 응답을 직접 확인하세요.
 
 | 파일 | 역할 |
 |---|---|
-| `kinderinfo.py` | 핵심 CLI. 모든 로직이 여기 있음 |
-| `mcp_server.py` | CLI를 MCP 도구로 노출 |
+| `kinderinfo.py` | 핵심 CLI. 공식 Open API 조회와 명령 전부 |
+| `neis.py` | NEIS 연동(병설유치원 방학·급식). 실패해도 본체와 무관 |
+| `kinderweb.py` | 유치원알리미 웹 공시 조회(원비·시정명령·평가). 키 불필요, 실패해도 본체와 무관 |
+| `mcp_server.py` | CLI를 MCP 도구 8종으로 노출 |
 | `sync_skill.py` | 스킬 원본을 Claude/Codex 폴더에 배포 |
 | `skill/kaic-kinder-info/SKILL.md` | 스킬 **원본**. 반드시 여기만 고칠 것 |
 
@@ -283,13 +285,16 @@ API 원본 응답을 직접 확인하세요.
 
 ### 검증
 
-변경 후 최소한 이 세 개는 돌려보세요.
+변경 후 최소한 이 네 개는 돌려보세요.
 
 ```bash
 python kinderinfo.py --version
 python kinderinfo.py search 11680 --limit 3 --fresh    # API 왕복 확인
 python kinderinfo.py profile 11680 강남유정             # 14개 항목 파싱 확인
+python kinderweb.py selftest                           # 웹 공시 파서 3종 확인
 ```
+
+`report`·`schedule`·`--web`을 건드렸다면 해당 명령도 실제 유치원 1곳으로 돌려보세요.
 
 ### 릴리스 절차 (유의적 버전)
 

@@ -226,8 +226,9 @@ codex mcp add kaic-kinder-info -- "<파이썬 절대경로>" "<저장소 경로>
 > **`python`이라고만 쓰지 마세요.** Windows에서는 Microsoft Store 스텁으로 잡혀
 > `CONNECTION_CLOSED`로 실패합니다. `where python` / `which python3`로 절대 경로를 확인해 쓰세요.
 
-노출되는 도구: `search_kindergartens`, `kindergarten_profile`, `compare_kindergartens`,
-`raw_data`, `list_regions`, `discover_region`
+노출되는 도구(8종): `search_kindergartens`, `kindergarten_profile`, `compare_kindergartens`,
+`kindergarten_schedule`, `kindergarten_report`, `raw_data`, `list_regions`, `discover_region`
+— CLI의 모든 기능을 대화로 쓸 수 있습니다.
 
 ### 스킬
 
