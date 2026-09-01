@@ -221,7 +221,10 @@ python sync_skill.py
 | "○○유치원 자세히" | `profile "서울 강남구" ○○` |
 | "원비 얼마야?" / "행정처분 있었어?" | `profile "서울 강남구" ○○ --web` |
 | "후보 정리해줘" / "방문 때 뭘 물어볼까?" | `report "서울 강남구" "A,B,C" --target --out 브리핑.md` |
-| "공시 새로 떴대" / 자료가 오래됨 | `refresh` 후 다시 조회 |
+| "이 세 곳이 내 후보야" | `pick "서울 강남구" "A,B,C"` — 이후 report/trend/diff 인자 생략 가능 |
+| "추세가 어때?" / "좋아지고 있어?" | `trend` (후보 저장 시 인자 불필요) |
+| "새 공시에서 뭐 바뀌었어?" | `diff` |
+| "공시 새로 떴대" / 자료가 오래됨 | `refresh` 후 다시 조회, 후보가 있으면 `diff` |
 | "A랑 B 비교해줘" | `compare "서울 강남구" "A,B"` |
 | "거기 방학 언제야?" | `schedule "서울 강남구" ○○초등학교병설` (병설만) |
 | "정원 많은 순으로" | `search ... --sort size` |
@@ -269,6 +272,7 @@ API 원본 응답을 직접 확인하세요.
 | `kinderinfo.py` | 핵심 CLI. 공식 Open API 조회와 명령 전부 |
 | `neis.py` | NEIS 연동(병설유치원 방학·급식). 실패해도 본체와 무관 |
 | `kinderweb.py` | 유치원알리미 웹 공시 조회(원비·시정명령·평가). 키 불필요, 실패해도 본체와 무관 |
+| `kinderbulk.py` | 과거 공시 차수 일괄 데이터(추이·diff 데이터원). 키 불필요, 과거 차수는 영구 캐시 |
 | `mcp_server.py` | CLI를 MCP 도구 8종으로 노출 |
 | `sync_skill.py` | 스킬 원본을 Claude/Codex 폴더에 배포 |
 | `check_docs.py` | 문서 동기화 점검(MCP 목록·구조 표·버전·명령). 릴리스 전 필수 |

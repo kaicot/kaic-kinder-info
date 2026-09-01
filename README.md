@@ -76,6 +76,11 @@ python kinderinfo.py compare "서울 강남구" "강남유정,개현초등학교
 # 최종 후보 브리핑 — 비교표 + 상세 + 방문 질문지를 한 문서로 (파일 저장 가능)
 python kinderinfo.py report "서울 강남구" "강남유정,개현초등학교병설" --target --out 브리핑.md
 
+# 후보 저장 → 이후 report/trend/diff 는 인자 없이
+python kinderinfo.py pick "서울 강남구" "강남유정,개현초등학교병설"
+python kinderinfo.py trend      # 충원율·원아·근속의 3년 추이
+python kinderinfo.py diff       # 최신 두 공시 차수 사이 변화
+
 # 캐시 비우기 (새 공시가 게시됐을 때)
 python kinderinfo.py refresh
 
@@ -117,6 +122,31 @@ python kinderinfo.py discover 경남        # 경기도는: discover 경기 --fu
 
 원비·시정명령·유치원 평가(웹 공시)와 병설 방학 실측(NEIS 키 있을 때)이 기본 포함되며,
 `--no-web`으로 웹 조회를 끄면 빨라집니다. `--out 파일.md`로 저장할 수 있습니다.
+
+### 추이와 변화 — 스냅샷의 함정을 벗어나기 (`pick`·`trend`·`diff`)
+
+같은 "충원율 98%"라도 3년째 오르는 중인지 떨어지는 중인지에 따라 의미가 정반대입니다.
+유치원알리미 사이트의 시계열 화면은 서비스 중단 상태지만, 공시자료 일괄 다운로드에는
+**2013년부터의 과거 차수**가 남아 있습니다. 이 도구는 그걸 읽어 추이를 복원합니다.
+
+```
+## ○○유치원
+| 차수 | 충원율 | 만3세 원아 | 전체 원아/정원 | 근속 1년 미만 |
+| 2024-1차 | 88% | 48명 | 140/160 | 75% |
+| ...
+| 2026-1차 | 98% | 52명 | 156/160 | 38% |
+추세: 충원율 ↗ (88→98, +10%p) · 근속 1년 미만 ↘ (75→38, -37%p)
+```
+
+- **`pick`** — 후보를 저장하면 `report`/`trend`/`diff`를 인자 없이 쓸 수 있습니다
+  (후보 목록은 `shortlist.json`에 저장되며 git에 올라가지 않습니다).
+- **`trend`** — 최근 5개 차수(≈3년)의 충원율·원아·근속 추이. 과거 차수 자료는
+  다시 바뀌지 않으므로 최초 1회만 내려받아 영구 보관합니다.
+- **`diff`** — 최신 두 차수 사이의 변화만 추립니다. 새 공시가 게시된 직후
+  "우리 후보 뭐 바뀌었어?"에 답하는 용도로, 새 공시 감지 알림과 이어집니다.
+- `report`에도 충원율 추이 행과 유치원별 추이 표가 기본 포함됩니다(`--no-trend`로 생략).
+- 화살표는 첫 차수↔끝 차수 단순 비교이고 ±2 이상일 때만 방향을 표시합니다.
+  해석은 붙이지 않습니다 — 판단은 사람 몫입니다.
 
 ### 새 공시 감지와 `refresh`
 
@@ -226,9 +256,11 @@ codex mcp add kaic-kinder-info -- "<파이썬 절대경로>" "<저장소 경로>
 > **`python`이라고만 쓰지 마세요.** Windows에서는 Microsoft Store 스텁으로 잡혀
 > `CONNECTION_CLOSED`로 실패합니다. `where python` / `which python3`로 절대 경로를 확인해 쓰세요.
 
-노출되는 도구(8종): `search_kindergartens`, `kindergarten_profile`, `compare_kindergartens`,
-`kindergarten_schedule`, `kindergarten_report`, `raw_data`, `list_regions`, `discover_region`
-— CLI의 모든 기능을 대화로 쓸 수 있습니다.
+노출되는 도구(11종): `search_kindergartens`, `kindergarten_profile`, `compare_kindergartens`,
+`kindergarten_schedule`, `kindergarten_report`, `kindergarten_trend`, `kindergarten_diff`,
+`save_shortlist`, `raw_data`, `list_regions`, `discover_region`
+— CLI의 모든 기능을 대화로 쓸 수 있습니다. 후보를 저장해 두면
+"내 후보 추이 보여줘", "브리핑 다시 만들어줘"가 인자 없이 동작합니다.
 
 ### 스킬
 

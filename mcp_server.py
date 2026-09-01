@@ -152,26 +152,83 @@ def kindergarten_schedule(region: str, name: str, year: int = 0,
 
 
 @mcp.tool()
-def kindergarten_report(region: str, names: str, age: int = 0,
+def kindergarten_report(region: str = "", names: str = "", age: int = 0,
                         target: bool = False, no_web: bool = False) -> str:
-    """최종 후보 브리핑 — 비교표 + 유치원별 상세 + **방문·전화 질문지**를
-    한 문서로 만든다. 후보를 2~3곳으로 좁힌 뒤 "브리핑/보고서 만들어줘",
-    "방문 때 뭘 물어볼까" 류 요청에 사용. 원비·시정명령(웹 공시)도 기본 포함.
+    """최종 후보 브리핑 — 비교표 + 유치원별 상세 + 추이 + **방문·전화 질문지**를
+    한 문서로 만든다. 후보를 좁힌 뒤 "브리핑 만들어줘", "방문 때 뭘 물어볼까"
+    류 요청에 사용. 원비·시정명령·평가(웹 공시)와 충원율 추이가 기본 포함.
 
     Args:
-        region: '서울 강남구' 같은 지역
-        names: 쉼표로 구분한 유치원명 1~4곳
+        region: '서울 강남구' 같은 지역. **비우면 save_shortlist 로 저장한 후보 사용**
+        names: 쉼표로 구분한 유치원명 1~4곳. 비우면 저장 후보 사용
         age: 기준 연령반(3|4|5). 0이면 만3세
         target: True면 .env 의 CHILD_BIRTH_YM 으로 기준 연령 자동 계산
         no_web: True면 원비·시정명령 웹 조회 생략(빠르게)
     """
-    args = ["report", region, names]
+    args = ["report"]
+    if region and names:
+        args += [region, names]
     if target:
         args.append("--target")
     if age in (3, 4, 5):
         args += ["--age", str(age)]
     if no_web:
         args.append("--no-web")
+    return _run(*args)
+
+
+@mcp.tool()
+def save_shortlist(region: str = "", names: str = "", show: bool = False,
+                   clear: bool = False) -> str:
+    """관심 후보 유치원을 저장한다. 저장해 두면 report/trend/diff 를 이름 없이
+    쓸 수 있다("내 후보 브리핑 만들어줘"). show=True 는 현재 후보 확인,
+    clear=True 는 비우기.
+
+    Args:
+        region: '서울 강남구' 같은 지역
+        names: 쉼표로 구분한 유치원명들
+        show: 저장된 후보 보기
+        clear: 후보 비우기
+    """
+    if clear:
+        return _run("pick", "--clear")
+    if show or not (region and names):
+        return _run("pick", "--show")
+    return _run("pick", region, names)
+
+
+@mcp.tool()
+def kindergarten_trend(region: str = "", names: str = "",
+                       periods: int = 5) -> str:
+    """후보 유치원들의 **추이** — 충원율·만3세 원아·전체 원아/정원·교사 근속
+    1년 미만 비율을 최근 N개 공시 차수(기본 5개 ≈ 3년)로 보여준다.
+    "추세/추이/변화 어때?", "좋아지고 있어?" 류 질문에 사용.
+
+    Args:
+        region: 지역. **비우면 저장된 후보 사용**
+        names: 쉼표로 구분한 유치원명들. 비우면 저장 후보 사용
+        periods: 차수 개수 (기본 5)
+    """
+    args = ["trend"]
+    if region and names:
+        args += [region, names]
+    if periods and periods != 5:
+        args += ["--periods", str(periods)]
+    return _run(*args)
+
+
+@mcp.tool()
+def kindergarten_diff(region: str = "", names: str = "") -> str:
+    """최신 두 공시 차수 사이의 후보 변화만 추려 보여준다. 새 공시가 게시된
+    직후 "우리 후보 뭐 바뀌었어?" 류 질문에 사용.
+
+    Args:
+        region: 지역. **비우면 저장된 후보 사용**
+        names: 쉼표로 구분한 유치원명들. 비우면 저장 후보 사용
+    """
+    args = ["diff"]
+    if region and names:
+        args += [region, names]
     return _run(*args)
 
 

@@ -25,7 +25,7 @@ import urllib.request
 from datetime import datetime, timedelta
 from pathlib import Path
 
-__version__ = "1.5.2"
+__version__ = "1.6.0"
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.stderr.reconfigure(encoding="utf-8", errors="replace")
@@ -375,7 +375,8 @@ def check_new_disclosure():
         fresh = str(fresh_rows[0].get("pbnttmng") or "") if fresh_rows else ""
         if fresh and fresh > min(t for t in tmngs if t):
             return (f"새 공시({fmt_pbnttmng(fresh)})가 게시되었습니다. "
-                    f"`python kinderinfo.py refresh` 후 다시 조회하면 최신 자료로 봅니다.")
+                    f"`python kinderinfo.py refresh` 후 다시 조회하면 최신 자료로 보고, "
+                    f"후보를 저장해 뒀다면 `diff` 로 무엇이 바뀌었는지 바로 볼 수 있습니다.")
     except Exception:  # noqa: BLE001 — 감지 실패는 본 기능에 영향 없음
         return None
     return None
@@ -394,7 +395,8 @@ def cmd_refresh(args):
         for f in CACHE_DIR.glob("*.json"):
             f.unlink()
             n += 1
-    print(f"캐시 {n}개 파일을 비웠습니다. 다음 조회부터 최신 공시를 새로 받습니다.")
+    print(f"캐시 {n}개 파일을 비웠습니다. 다음 조회부터 최신 공시를 새로 받습니다."
+          " (과거 차수 벌크 자료는 불변이라 보존됩니다)")
 
 
 # ------------------------------------------------------------ region tables
@@ -1286,6 +1288,175 @@ def cmd_compare(args):
     notify_new_disclosure()
 
 
+# ---------------------------------------------------------- 후보(shortlist)
+SHORTLIST_FILE = ROOT / "shortlist.json"
+
+
+def load_shortlist():
+    if SHORTLIST_FILE.exists():
+        try:
+            sl = json.loads(SHORTLIST_FILE.read_text(encoding="utf-8"))
+            if sl.get("region") and sl.get("names"):
+                return sl
+        except ValueError:
+            pass
+    return None
+
+
+def region_names_or_shortlist(args):
+    """(지역, 이름들) 반환. 인자를 안 주면 pick 으로 저장한 후보를 쓴다."""
+    if getattr(args, "region", None) and getattr(args, "names", None):
+        return args.region, args.names
+    sl = load_shortlist()
+    if sl:
+        print(f"[후보 사용] {sl['region']} — {', '.join(sl['names'])}",
+              file=sys.stderr)
+        return sl["region"], ",".join(sl["names"])
+    sys.exit("[오류] 지역과 유치원명을 함께 주거나, 먼저 후보를 저장하세요.\n"
+             '  예: python kinderinfo.py pick "서울 강남구" "가나,다라,마바"')
+
+
+def cmd_pick(args):
+    if args.clear:
+        if SHORTLIST_FILE.exists():
+            SHORTLIST_FILE.unlink()
+        print("후보를 비웠습니다.")
+        return
+    if args.show or not args.region:
+        sl = load_shortlist()
+        print(f"후보: {sl['region']} — {', '.join(sl['names'])} "
+              f"(저장 {sl.get('saved', '?')})" if sl else
+              "저장된 후보가 없습니다. 예: python kinderinfo.py pick "
+              '"서울 강남구" "가나,다라"')
+        return
+    if not args.names:
+        sys.exit('[오류] 유치원명들을 쉼표로 주세요. 예: pick "서울 강남구" "가나,다라"')
+    regions = resolve_region(args.region)
+    names = [n.strip() for n in args.names.split(",") if n.strip()]
+    kinders = [find_kinder(regions, n) for n in names]   # 검증 겸 정식 명칭 확보
+    sl = {"region": args.region,
+          "names": [k["kindername"] for k in kinders],
+          "saved": datetime.now().strftime("%Y-%m-%d")}
+    SHORTLIST_FILE.write_text(json.dumps(sl, ensure_ascii=False, indent=1),
+                              encoding="utf-8")
+    print(f"후보 {len(kinders)}곳 저장: {', '.join(sl['names'])}")
+    print("이제 report / trend / diff 를 인자 없이 쓸 수 있습니다.")
+
+
+# ------------------------------------------------------- cmd: trend / diff
+def load_bulk():
+    try:
+        import kinderbulk
+    except ImportError:
+        sys.exit("[오류] kinderbulk.py 를 찾을 수 없습니다. 저장소에서 함께 받아주세요.")
+    return kinderbulk
+
+
+def gather_series(kinders, periods=5):
+    """유치원별 차수 시리즈. 실패한 유치원은 {'error': …} 로 표시."""
+    kb = load_bulk()
+    timings = kb.recent_timings(periods)
+    out = {}
+    for k in kinders:
+        try:
+            out[k["kindercode"]] = kb.series(
+                k["_sido"], k["kindername"], k.get("addr"), timings)
+        except Exception as e:  # noqa: BLE001 — 한 곳 실패가 전체를 막지 않게
+            out[k["kindercode"]] = {"error": str(e)}
+    return out, timings
+
+
+def trend_lines(ser):
+    """유치원 1곳의 추이 마크다운 줄들. trend 명령과 report 카드가 공유."""
+    kb = load_bulk()
+    if not isinstance(ser, list):
+        return [f"- ⚠ 추이 조회 실패: {(ser or {}).get('error', '?')}"]
+    lines = ["| 차수 | 충원율 | 만3세 원아 | 전체 원아/정원 | 근속 1년 미만 |",
+             "|---|---|---|---|---|"]
+    for r in ser:
+        lines.append("| {} | {} | {} | {} | {} |".format(
+            r["label"],
+            f"{r['충원율']}%" if r.get("충원율") is not None else "-",
+            f"{r['원아3']}명" if r.get("원아3") is not None else "-",
+            f"{r['원아']}/{r['정원']}" if r.get("원아") is not None else "-",
+            f"{r['근속1년미만']}%" if r.get("근속1년미만") is not None else "-"))
+    fills = [r.get("충원율") for r in ser if r.get("충원율") is not None]
+    tens = [r.get("근속1년미만") for r in ser if r.get("근속1년미만") is not None]
+    marks = []
+    if len(fills) >= 2:
+        marks.append("충원율 " + kb.direction(fills[0], fills[-1]))
+    if len(tens) >= 2:
+        marks.append("근속 1년 미만 " + kb.direction(tens[0], tens[-1]))
+    if marks:
+        lines += ["", "추세: " + " · ".join(marks)]
+    return lines
+
+
+def cmd_trend(args):
+    region, names_str = region_names_or_shortlist(args)
+    regions = resolve_region(region)
+    names = [n.strip() for n in names_str.split(",") if n.strip()]
+    kinders = [find_kinder(regions, n, fresh=args.fresh) for n in names]
+    ser_map, timings = gather_series(kinders, args.periods)
+    if args.json:
+        print(json.dumps({k["kindername"]: ser_map[k["kindercode"]]
+                          for k in kinders}, ensure_ascii=False, indent=1))
+        return
+    kb = load_bulk()
+    print(f"# 후보 추이 — {kb.timing_label(timings[0])} ~ "
+          f"{kb.timing_label(timings[-1])}")
+    for k in kinders:
+        print(f"\n## {k['kindername']} ({k.get('establish')})")
+        for line in trend_lines(ser_map[k["kindercode"]]):
+            print(line)
+    print("\n화살표는 첫 차수와 끝 차수의 단순 비교이며 ±2 이상일 때만 방향을 "
+          "표시합니다. 만3세 원아가 '-'인 차수는 그해 만3세반 미운영일 수 있습니다. "
+          "과거 차수 자료는 최초 1회만 내려받아 영구 보관합니다.")
+
+
+def cmd_diff(args):
+    region, names_str = region_names_or_shortlist(args)
+    regions = resolve_region(region)
+    names = [n.strip() for n in names_str.split(",") if n.strip()]
+    kinders = [find_kinder(regions, n, fresh=args.fresh) for n in names]
+    ser_map, timings = gather_series(kinders, 2)
+    kb = load_bulk()
+    print(f"# 후보 변화 — {kb.timing_label(timings[0])} → "
+          f"{kb.timing_label(timings[1])}")
+    for k in kinders:
+        ser = ser_map[k["kindercode"]]
+        print(f"\n## {k['kindername']}")
+        if not isinstance(ser, list):
+            print(f"- ⚠ 조회 실패: {(ser or {}).get('error', '?')}")
+            continue
+        prev, cur = ser[0], ser[1]
+        changes, same = [], []
+        for label, key, unit in (("충원율", "충원율", "%p"),
+                                 ("만3세 원아", "원아3", "명"),
+                                 ("전체 원아", "원아", "명"),
+                                 ("정원", "정원", "명"),
+                                 ("근속 1년 미만", "근속1년미만", "%p")):
+            p, c = prev.get(key), cur.get(key)
+            if p is None and c is None:
+                continue
+            if p is None or c is None:
+                changes.append(f"{label}: {'-' if p is None else p} → "
+                               f"{'-' if c is None else c}")
+            elif p != c:
+                d = c - p
+                changes.append(f"{label}: {p} → {c} ({'+' if d > 0 else ''}{d}{unit})")
+            else:
+                same.append(label)
+        for ch in changes:
+            print(f"- {ch}")
+        if not changes:
+            print("- 변화 없음")
+        elif same:
+            print(f"- (변화 없음: {', '.join(same)})")
+    print("\n새 공시 직후에 쓰면 후보들의 변동을 한눈에 봅니다. 큰 변동이 있으면 "
+          "trend 로 흐름을, profile 로 상세를 확인하세요.")
+
+
 # ------------------------------------------------------------- cmd: report
 VISIT_COMMON_QUESTIONS = [
     "급식은 직영인가요? 조리 인력과 식단 구성은 어떻게 되나요? "
@@ -1376,8 +1547,9 @@ def visit_questions(b, sections, web, sched, age):
 def cmd_report(args):
     age, target_note = resolve_search_age(args)
     age = age or 3
-    regions = resolve_region(args.region)
-    names = [n.strip() for n in args.names.split(",") if n.strip()]
+    region, names_str = region_names_or_shortlist(args)
+    regions = resolve_region(region)
+    names = [n.strip() for n in names_str.split(",") if n.strip()]
     if not 1 <= len(names) <= 4:
         sys.exit("[오류] report 는 쉼표로 구분한 유치원 1~4곳을 받습니다.")
     kinders = [find_kinder(regions, n, fresh=args.fresh) for n in names]
@@ -1410,6 +1582,14 @@ def cmd_report(args):
             except Exception:  # noqa: BLE001 — 부가 정보
                 pass
         per[code] = info
+
+    trend_map = {}
+    if not args.no_trend:
+        try:
+            trend_map, _ = gather_series(kinders, 5)
+        except Exception as e:  # noqa: BLE001 — 추이는 곁가지
+            print(f"[안내] 추이 조회 실패({e}) — 추이 없이 계속합니다.",
+                  file=sys.stderr)
 
     L = []
     w = L.append
@@ -1457,12 +1637,28 @@ def cmd_report(args):
         return (f"{len(done)}회 실시 ({', '.join(done[-3:])})"
                 if done else "실시 이력 없음")
 
+    def fill_trend_cell(k):
+        ser = trend_map.get(k["kindercode"])
+        if not isinstance(ser, list):
+            return None
+        vals = [r.get("충원율") for r in ser]
+        got = [v for v in vals if v is not None]
+        if not got:
+            return None
+        arrow = ""
+        if len(got) >= 2:
+            d = got[-1] - got[0]
+            arrow = " ↗" if d >= 2 else (" ↘" if d <= -2 else " →")
+        return "→".join("-" if v is None else str(v) for v in vals) + f"%{arrow}"
+
     extra = []
     if not args.no_web:
         extra += [(f"원비 합계(만{age}세, 월)", fee_cell),
                   ("시정명령 이력", violation_cell),
                   ("유치원 평가", eval_cell)]
     extra.append(("방학 합계(모초교 실측)", vacation_cell))
+    if trend_map:
+        extra.append(("충원율 추이(5개 차수)", fill_trend_cell))
 
     w("## 1. 한눈 비교")
     w("")
@@ -1506,6 +1702,13 @@ def cmd_report(args):
             w(f"- 로드뷰(정차 여건): {roadview_url(k)}")
         if k.get("telno"):
             w(f"- 전화: {k['telno']}")
+        ser = trend_map.get(k["kindercode"])
+        if isinstance(ser, list):
+            w("")
+            w("**추이 (최근 5개 차수)**")
+            w("")
+            for line in trend_lines(ser):
+                w(line)
         w("")
         w("**방문·전화로 확인할 것**")
         for q in visit_questions(k, info["sections"], web, s, age):
@@ -1731,13 +1934,37 @@ def main():
 
     sp = sub.add_parser("report",
                         help="최종 후보 브리핑(비교표+상세+방문 질문지, 저장 가능)")
-    add_common(sp)
+    add_common(sp, region=False)
     add_age(sp)
-    sp.add_argument("names", help="쉼표로 구분한 유치원명 1~4곳")
+    sp.add_argument("region", nargs="?", help="지역 (생략 시 pick 저장 후보 사용)")
+    sp.add_argument("names", nargs="?", help="쉼표로 구분한 유치원명 1~4곳 (생략 시 후보)")
     sp.add_argument("--out", help="마크다운 파일로 저장 (예: --out 브리핑.md)")
     sp.add_argument("--no-web", action="store_true",
                     help="원비·시정명령 웹 조회 생략(빠르게)")
+    sp.add_argument("--no-trend", action="store_true",
+                    help="충원율·근속 추이 생략(빠르게)")
     sp.set_defaults(func=cmd_report)
+
+    sp = sub.add_parser("pick", help="후보 저장 — 이후 report/trend/diff 인자 생략 가능")
+    sp.add_argument("region", nargs="?", help="지역 (예: '서울 강남구')")
+    sp.add_argument("names", nargs="?", help="쉼표로 구분한 유치원명들")
+    sp.add_argument("--show", action="store_true", help="저장된 후보 보기")
+    sp.add_argument("--clear", action="store_true", help="후보 비우기")
+    sp.set_defaults(func=cmd_pick)
+
+    sp = sub.add_parser("trend",
+                        help="후보 추이 — 충원율·원아·근속(최근 5개 차수 ≈ 3년)")
+    add_common(sp, region=False)
+    sp.add_argument("region", nargs="?", help="지역 (생략 시 pick 저장 후보 사용)")
+    sp.add_argument("names", nargs="?", help="쉼표로 구분한 유치원명들 (생략 시 후보)")
+    sp.add_argument("--periods", type=int, default=5, help="차수 개수 (기본 5)")
+    sp.set_defaults(func=cmd_trend)
+
+    sp = sub.add_parser("diff", help="최신 두 공시 차수 사이 후보 변화")
+    add_common(sp, region=False)
+    sp.add_argument("region", nargs="?", help="지역 (생략 시 pick 저장 후보 사용)")
+    sp.add_argument("names", nargs="?", help="쉼표로 구분한 유치원명들 (생략 시 후보)")
+    sp.set_defaults(func=cmd_diff)
 
     sp = sub.add_parser("schedule",
                         help="병설유치원의 방학·학사일정(모초등학교 기준, NEIS)")
