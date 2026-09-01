@@ -25,7 +25,7 @@ import urllib.request
 from datetime import datetime, timedelta
 from pathlib import Path
 
-__version__ = "1.4.0"
+__version__ = "1.5.0"
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.stderr.reconfigure(encoding="utf-8", errors="replace")
@@ -336,6 +336,65 @@ def fetch(ep, sido, sgg, fresh=False, quiet=False):
     if not quiet:
         print(f"  [API] {ENDPOINTS[ep]} {sido}/{sgg}: {len(rows)}건", file=sys.stderr)
     return rows
+
+
+# ------------------------------------------------------ 새 공시 차수 감지
+PULSE_FILE = CACHE_DIR / "_pulse.json"
+
+
+def check_new_disclosure():
+    """하루 1회, 캐시가 가장 작은 지역 하나만 새로 받아 공시 차수를 비교한다.
+
+    새 차수(예: 2026년 2차)가 게시됐는데 캐시가 옛 차수면 안내 문구를 반환.
+    실패는 조용히 무시한다 — 알림이 본 기능을 방해하면 안 된다.
+    """
+    try:
+        today = datetime.now().strftime("%Y-%m-%d")
+        state = {}
+        if PULSE_FILE.exists():
+            state = json.loads(PULSE_FILE.read_text(encoding="utf-8"))
+        if state.get("checked") == today:
+            return None
+        caches = sorted((f for f in CACHE_DIR.glob("basicInfo2_*.json")),
+                        key=lambda f: f.stat().st_size)
+        tmngs, smallest = set(), None
+        for f in caches:
+            try:
+                rows = json.loads(f.read_text(encoding="utf-8"))["rows"]
+            except (OSError, ValueError, KeyError):
+                continue
+            if rows:
+                tmngs.add(str(rows[0].get("pbnttmng") or ""))
+                smallest = smallest or f
+        state["checked"] = today
+        PULSE_FILE.write_text(json.dumps(state), encoding="utf-8")
+        if not smallest or not tmngs:
+            return None
+        _, sido, sgg = smallest.stem.split("_")
+        fresh_rows = fetch("basicInfo2", sido, sgg, fresh=True, quiet=True)
+        fresh = str(fresh_rows[0].get("pbnttmng") or "") if fresh_rows else ""
+        if fresh and fresh > min(t for t in tmngs if t):
+            return (f"새 공시({fmt_pbnttmng(fresh)})가 게시되었습니다. "
+                    f"`python kinderinfo.py refresh` 후 다시 조회하면 최신 자료로 봅니다.")
+    except Exception:  # noqa: BLE001 — 감지 실패는 본 기능에 영향 없음
+        return None
+    return None
+
+
+def notify_new_disclosure():
+    note = check_new_disclosure()
+    if note:
+        print(f"\n📢 {note}")
+
+
+def cmd_refresh(args):
+    """캐시를 비워 다음 조회부터 최신 공시를 새로 받게 한다."""
+    n = 0
+    if CACHE_DIR.exists():
+        for f in CACHE_DIR.glob("*.json"):
+            f.unlink()
+            n += 1
+    print(f"캐시 {n}개 파일을 비웠습니다. 다음 조회부터 최신 공시를 새로 받습니다.")
 
 
 # ------------------------------------------------------------ region tables
@@ -849,6 +908,7 @@ def cmd_search(args):
               "실제 이동 편의와 다를 수 있습니다.\n"
               "자차 등하원이라면 **유치원 앞에 잠시 정차할 수 있는지**가 관건인데 이는 어떤 "
               "데이터에도 없습니다. profile 의 로드뷰 링크로 직접 확인하세요.")
+    notify_new_disclosure()
 
 
 # ------------------------------------------------------ 웹 공시(원비·시정명령)
@@ -931,6 +991,20 @@ def render_web_extras(b, out=None):
     except kinderweb.WebError as e:
         print(f"- ⚠ 원비 조회 실패: {e}")
         print(f"  - 직접 확인: {kinderweb.page_url('cost', code)}")
+
+    try:
+        ev = kinderweb.get_evaluation(code)
+        done = [y["학년도"].replace("학년도", "") for y in ev.get("실시", [])
+                if y.get("실시") == "실시"]
+        pdfs = len(ev.get("보고서", []))
+        line = (f"{len(done)}회 실시 ({', '.join(done[-3:])})"
+                if done else "실시 이력 없음")
+        print(f"- **유치원 평가**: {line}"
+              + (f", 평가결과 PDF {pdfs}건 공시" if pdfs else ""))
+        print(f"  - 원본(PDF 열람): {ev['url']}")
+    except kinderweb.WebError as e:
+        print(f"- ⚠ 유치원 평가 조회 실패: {e}")
+        print(f"  - 직접 확인: {kinderweb.page_url('operate', code)}")
     print()
 
 
@@ -943,53 +1017,34 @@ PROFILE_SECTIONS = [
 ]
 
 
-def cmd_profile(args):
-    regions = resolve_region(args.region)
-    b = find_kinder(regions, args.name, fresh=args.fresh)
-
-    sections = {}   # ep -> rows | ApiDenied 메시지
+def gather_sections(b, fresh=False):
+    """유치원 1곳의 전 공시 항목 수집. 점검 중/오류는 'DENIED:…'/'ERROR:…' 문자열."""
+    sections = {}
     for ep, _ in PROFILE_SECTIONS:
         try:
-            sections[ep] = rows_for_kinder(ep, b, fresh=args.fresh)
+            sections[ep] = rows_for_kinder(ep, b, fresh=fresh)
         except ApiDenied as e:
             sections[ep] = f"DENIED:{e}"
         except ApiError as e:
             sections[ep] = f"ERROR:{e}"
+    return sections
 
-    if args.json:
-        out = {"basicInfo2": b}
-        for ep, v in sections.items():
-            out[ep] = v if isinstance(v, list) else {"status": v}
-        if getattr(args, "web", False):
-            try:
-                import kinderweb
-                out["web"] = {"violations": kinderweb.get_violations(b["kindercode"]),
-                              "costs": kinderweb.get_costs(b["kindercode"])}
-            except Exception as e:  # noqa: BLE001 — 부가 정보라 본체를 막지 않는다
-                out["web"] = {"error": str(e)}
-        print(json.dumps(out, ensure_ascii=False, indent=1))
-        return
 
-    yow = sections.get("yearOfWork")
-    yow_row = yow[0] if isinstance(yow, list) and yow else None
-    asp = sections.get("afterSchoolPresent")
-    asp_row = asp[0] if isinstance(asp, list) and asp else None
-    ca = sections.get("classArea")
-    ca_row = ca[0] if isinstance(ca, list) and ca else None
-    safe = sections.get("safetyEdu")
-    safe_row = safe[0] if isinstance(safe, list) and safe else None
-    bus = sections.get("schoolBus")
-    bus_row = bus[0] if isinstance(bus, list) and bus else None
-    lsn = sections.get("lessonDay")
-    lsn_row = lsn[0] if isinstance(lsn, list) and lsn else None
+def first_row(sections, ep):
+    v = sections.get(ep)
+    return v[0] if isinstance(v, list) and v else None
 
-    print(f"# {b['kindername']} 종합 리포트")
-    print(f"{b.get('_sgg_name')} · {one_line_summary(b)} · "
-          f"{fmt_pbnttmng(b.get('pbnttmng'))} 기준")
-    print()
-    print("## 핵심 요약(파생 지표)")
+
+def summary_items(b, sections):
+    """핵심 요약(파생 지표) 목록. profile 과 report 가 공유한다."""
+    yow_row = first_row(sections, "yearOfWork")
+    asp_row = first_row(sections, "afterSchoolPresent")
+    ca_row = first_row(sections, "classArea")
+    safe_row = first_row(sections, "safetyEdu")
+    bus_row = first_row(sections, "schoolBus")
+    lsn_row = first_row(sections, "lessonDay")
     ts = tenure_stats(yow_row)
-    items = [
+    return [
         ("만3세", f"{to_int(b.get('clcnt3')) or 0}학급 / 원아 "
                   f"{to_int(b.get('ppcnt3')) or 0}명 / 정원 "
                   f"{to_int(b.get('ag3fpcnt')) or 0}명"
@@ -1017,7 +1072,33 @@ def cmd_profile(args):
           if distance_from_home(b) is not None else None)),
         ("통학차량 관점", bus_note(bus_row)),
     ]
-    for label, val in items:
+
+
+def cmd_profile(args):
+    regions = resolve_region(args.region)
+    b = find_kinder(regions, args.name, fresh=args.fresh)
+    sections = gather_sections(b, fresh=args.fresh)
+
+    if args.json:
+        out = {"basicInfo2": b}
+        for ep, v in sections.items():
+            out[ep] = v if isinstance(v, list) else {"status": v}
+        if getattr(args, "web", False):
+            try:
+                import kinderweb
+                out["web"] = {"violations": kinderweb.get_violations(b["kindercode"]),
+                              "costs": kinderweb.get_costs(b["kindercode"])}
+            except Exception as e:  # noqa: BLE001 — 부가 정보라 본체를 막지 않는다
+                out["web"] = {"error": str(e)}
+        print(json.dumps(out, ensure_ascii=False, indent=1))
+        return
+
+    print(f"# {b['kindername']} 종합 리포트")
+    print(f"{b.get('_sgg_name')} · {one_line_summary(b)} · "
+          f"{fmt_pbnttmng(b.get('pbnttmng'))} 기준")
+    print()
+    print("## 핵심 요약(파생 지표)")
+    for label, val in summary_items(b, sections):
         if val:
             print(f"- **{label}**: {val}")
     print()
@@ -1064,18 +1145,12 @@ def cmd_profile(args):
                 for line in render_kv(r):
                     print(line)
         print()
+    notify_new_disclosure()
 
 
 # ------------------------------------------------------------ cmd: compare
-def cmd_compare(args):
-    age, target_note = resolve_search_age(args)
-    age = age or 3   # 비교표는 기준 연령이 하나 필요
-    regions = resolve_region(args.region)
-    names = [n.strip() for n in args.names.split(",") if n.strip()]
-    if len(names) < 2:
-        sys.exit("[오류] compare 는 쉼표로 구분한 2곳 이상이 필요합니다.")
-    kinders = [find_kinder(regions, n, fresh=args.fresh) for n in names]
-
+def gather_compare_aux(kinders, fresh=False):
+    """비교표에 필요한 부가 항목(근속·차량·안전·면적·방과후·수업일수) 수집."""
     aux = {}
     for k in kinders:
         code = k["kindercode"]
@@ -1083,14 +1158,23 @@ def cmd_compare(args):
         for ep in ("yearOfWork", "schoolBus", "safetyEdu", "classArea",
                    "afterSchoolPresent", "lessonDay"):
             try:
-                rows = rows_for_kinder(ep, k, fresh=args.fresh)
+                rows = rows_for_kinder(ep, k, fresh=fresh)
                 aux[code][ep] = rows[0] if rows else None
             except ApiError:
                 aux[code][ep] = None
+    return aux
+
+
+def compare_table_lines(kinders, aux, age, extra_rows=()):
+    """비교표 마크다운 줄 목록. compare 와 report 가 공유한다.
+
+    extra_rows: (라벨, fn(kinder)→str|None) 목록 — 주소 행 앞에 끼워 넣는다.
+    """
+    lines = []
 
     def metric_row(label, fn):
         cells = " | ".join(md_escape(fn(k) or "-") for k in kinders)
-        print(f"| {label} | {cells} |")
+        lines.append(f"| {label} | {cells} |")
 
     def ten(k):
         ts = tenure_stats(aux[k["kindercode"]].get("yearOfWork"))
@@ -1143,13 +1227,9 @@ def cmd_compare(args):
         blw = r.get("ldnum_blw_yn")
         return f"{v}일" + (" ⚠법정미달" if blw == "Y" else "")
 
-    print(f"# 유치원 비교 ({fmt_pbnttmng(kinders[0].get('pbnttmng'))} 기준)")
-    if target_note:
-        print(f"대상: {target_note}")
-    print()
     header = " | ".join(md_escape(k["kindername"]) for k in kinders)
-    print(f"| 항목 | {header} |")
-    print("|---" * (len(kinders) + 1) + "|")
+    lines.append(f"| 항목 | {header} |")
+    lines.append("|---" * (len(kinders) + 1) + "|")
     metric_row("시군구", lambda k: k.get("_sgg_name"))
     metric_row("설립유형", lambda k: k.get("establish"))
     metric_row("개원일", lambda k: fmt_date(k.get("odate")))
@@ -1176,12 +1256,279 @@ def cmd_compare(args):
     metric_row("통학차량 관점",
                lambda k: (bus_note(aux[k["kindercode"]].get("schoolBus")) or "")
                .replace("**", ""))
+    for label, fn in extra_rows:
+        metric_row(label, fn)
     metric_row("주소", lambda k: k.get("addr"))
     metric_row("전화", lambda k: k.get("telno"))
     metric_row("로드뷰(정차 여건 확인)", roadview_url)
+    return lines
+
+
+def cmd_compare(args):
+    age, target_note = resolve_search_age(args)
+    age = age or 3   # 비교표는 기준 연령이 하나 필요
+    regions = resolve_region(args.region)
+    names = [n.strip() for n in args.names.split(",") if n.strip()]
+    if len(names) < 2:
+        sys.exit("[오류] compare 는 쉼표로 구분한 2곳 이상이 필요합니다.")
+    kinders = [find_kinder(regions, n, fresh=args.fresh) for n in names]
+    aux = gather_compare_aux(kinders, fresh=args.fresh)
+
+    print(f"# 유치원 비교 ({fmt_pbnttmng(kinders[0].get('pbnttmng'))} 기준)")
+    if target_note:
+        print(f"대상: {target_note}")
+    print()
+    for line in compare_table_lines(kinders, aux, age):
+        print(line)
     print()
     print("근속 평균은 공시 구간(1년 미만~6년 이상)의 중간값 가중 추정치입니다. "
           "교직원 수·급식 항목은 현재 공시 점검 중이면 표시되지 않을 수 있습니다.")
+    notify_new_disclosure()
+
+
+# ------------------------------------------------------------- cmd: report
+VISIT_COMMON_QUESTIONS = [
+    "급식은 직영인가요? 조리 인력과 식단 구성은 어떻게 되나요? "
+    "(급식 공시가 현재 점검 중이라 직접 확인 필요)",
+    "모집 인원과 추첨·대기 순번 방식은 어떻게 되나요?",
+    "학부모 참관·상담은 어떤 방식으로 하나요?",
+]
+
+
+def visit_questions(b, sections, web, sched, age):
+    """공시 데이터의 이상 신호를 방문·전화 질문으로 바꾼다. 규칙 기반."""
+    qs = []
+    asp = first_row(sections, "afterSchoolPresent")
+    bus = first_row(sections, "schoolBus")
+    safe = first_row(sections, "safetyEdu")
+    lsn = first_row(sections, "lessonDay")
+
+    if is_annex(b):
+        vac = (sum(d for *_, d in sched["vacs"])
+               if sched and sched.get("vacs") else None)
+        days = f"약 {vac}일" if vac else "긴"
+        staff = ""
+        if asp:
+            staff = (f" (공시상 방과후 전담: 정규 {to_int(asp.get('fxrl_thcnt')) or 0}명·"
+                     f"단시간 {to_int(asp.get('shcnt_thcnt')) or 0}명·"
+                     f"강사 {to_int(asp.get('cce_tcr_cnt')) or 0}명)")
+        qs.append(f"방학({days}) 동안 방과후 운영 시간과 담당 인력은 "
+                  f"어떻게 되나요?{staff}")
+
+    if (to_int(b.get(f"clcnt{age}")) or 0) == 0:
+        year = next_admission_year()
+        if (to_int(b.get("mixclcnt")) or 0) > 0:
+            qs.append(f"{year}학년도에 만{age}세를 모집하나요? "
+                      f"혼합반이라면 연령 구성이 어떻게 되나요?")
+        else:
+            qs.append(f"공시에 만{age}세 반이 없는데, {year}학년도 만{age}세 "
+                      f"모집 계획이 있나요?")
+
+    ts = tenure_stats(first_row(sections, "yearOfWork"))
+    if ts and ts[2] >= 30:
+        qs.append(f"교사 근속 1년 미만이 {ts[2]}%로 공시돼 있는데, "
+                  f"최근 교사 변동이 있었나요?")
+
+    fr = fill_rate(b)
+    if fr is not None and fr <= 40:
+        qs.append(f"정원 대비 원아가 {fr}% 수준인데 특별한 이유가 있나요?")
+
+    if bus and bus.get("vhcl_oprn_yn") == "Y":
+        qs.append("통학차량 노선이 저희 동네를 지나나요? 차량에 동승 보호자가 있나요?")
+    elif bus:
+        qs.append("(방문 전) 로드뷰로 원 앞 정차 공간을 보고, 등하원 시간대 "
+                  "차량 흐름을 물어보세요.")
+
+    if web and isinstance(web.get("costs"), dict):
+        annual = []
+        for key in ("교육과정", "방과후"):
+            for label, row in (web["costs"].get(key) or {}).items():
+                if label.startswith(("합계", "소계")):
+                    continue
+                cyc = row.get("결제주기") or ""
+                if cyc and cyc not in ("-", "월단위") and any(row["금액"].values()):
+                    annual.append(f"{label}({cyc})")
+        if annual:
+            qs.append(f"{', '.join(annual)} 같은 비월단위 항목까지 포함하면 "
+                      f"연간 총 부담액이 얼마인가요?")
+
+    if (safe and safe.get("cctv_ist_yn") == "Y"
+            and (to_int(safe.get("cctv_ist_out")) or 0) == 0):
+        qs.append("실외 CCTV가 0대로 공시돼 있는데, 바깥 놀이 공간 안전 관리는 "
+                  "어떻게 하나요?")
+
+    ar = afterschool_rate(asp, b)
+    if ar is not None and ar < 50:
+        qs.append(f"방과후과정 참여율이 {ar}%인데, 오후 돌봄 운영 규모가 "
+                  f"실제로 어느 정도인가요?")
+
+    if lsn and lsn.get("ldnum_blw_yn") == "Y":
+        qs.append("법정 수업일수 미달로 공시돼 있는데 사유가 무엇인가요?")
+
+    if (web and isinstance(web.get("violations"), dict)
+            and not web["violations"].get("clean", True)):
+        qs.insert(0, "공시된 시정명령·행정처분 이력의 경위와 이후 개선 조치를 "
+                     "설명해 주실 수 있나요?")
+
+    return qs + VISIT_COMMON_QUESTIONS
+
+
+def cmd_report(args):
+    age, target_note = resolve_search_age(args)
+    age = age or 3
+    regions = resolve_region(args.region)
+    names = [n.strip() for n in args.names.split(",") if n.strip()]
+    if not 1 <= len(names) <= 4:
+        sys.exit("[오류] report 는 쉼표로 구분한 유치원 1~4곳을 받습니다.")
+    kinders = [find_kinder(regions, n, fresh=args.fresh) for n in names]
+    aux = gather_compare_aux(kinders, fresh=args.fresh)
+
+    per = {}
+    for k in kinders:
+        code = k["kindercode"]
+        info = {"sections": gather_sections(k, fresh=args.fresh),
+                "web": None, "sched": None}
+        if not args.no_web:
+            web = {}
+            try:
+                import kinderweb
+                web["violations"] = kinderweb.get_violations(code)
+                web["costs"] = kinderweb.get_costs(code)
+                try:
+                    web["eval"] = kinderweb.get_evaluation(code)
+                except Exception:  # noqa: BLE001 — 평가는 곁가지
+                    pass
+            except Exception as e:  # noqa: BLE001 — 부가 정보
+                web["error"] = str(e)
+            info["web"] = web
+        if is_annex(k) and get_setting("NEIS_API_KEY"):
+            try:
+                school, vacs, _events, yr = school_schedule(k, quiet=True)
+                if school:
+                    info["sched"] = {"school": school["SCHUL_NM"],
+                                     "vacs": vacs, "year": yr}
+            except Exception:  # noqa: BLE001 — 부가 정보
+                pass
+        per[code] = info
+
+    L = []
+    w = L.append
+    today = datetime.now().strftime("%Y-%m-%d")
+    w(f"# 유치원 후보 브리핑 — {', '.join(k['kindername'] for k in kinders)}")
+    head = f"{today} 생성 · {fmt_pbnttmng(kinders[0].get('pbnttmng'))} 기준"
+    if target_note:
+        head += f" · 대상: {target_note}"
+    w(head)
+    w("")
+
+    def _web_of(k):
+        return per[k["kindercode"]].get("web") or {}
+
+    def fee_cell(k):
+        c = _web_of(k).get("costs")
+        if not isinstance(c, dict):
+            return None
+        total = 0
+        for key in ("교육과정", "방과후"):
+            t = next((v for kk, v in (c.get(key) or {}).items()
+                      if kk.startswith("합계")), None)
+            if t:
+                total += t["금액"].get(age) or 0
+        return f"월 {total:,}원"
+
+    def violation_cell(k):
+        v = _web_of(k).get("violations")
+        if not isinstance(v, dict):
+            return None
+        return "없음" if v.get("clean") else f"⚠ {len(v.get('items', []))}건"
+
+    def vacation_cell(k):
+        s = per[k["kindercode"]].get("sched")
+        if not s or not s.get("vacs"):
+            return None
+        return f"{sum(d for *_, d in s['vacs'])}일"
+
+    def eval_cell(k):
+        e = _web_of(k).get("eval")
+        if not isinstance(e, dict):
+            return None
+        done = [y["학년도"].replace("학년도", "") for y in e.get("실시", [])
+                if y.get("실시") == "실시"]
+        return (f"{len(done)}회 실시 ({', '.join(done[-3:])})"
+                if done else "실시 이력 없음")
+
+    extra = []
+    if not args.no_web:
+        extra += [(f"원비 합계(만{age}세, 월)", fee_cell),
+                  ("시정명령 이력", violation_cell),
+                  ("유치원 평가", eval_cell)]
+    extra.append(("방학 합계(모초교 실측)", vacation_cell))
+
+    w("## 1. 한눈 비교")
+    w("")
+    L.extend(compare_table_lines(kinders, aux, age, extra_rows=extra))
+    w("")
+
+    w("## 2. 유치원별 상세와 방문 질문")
+    for i, k in enumerate(kinders, 1):
+        info = per[k["kindercode"]]
+        w("")
+        w(f"### {i}. {k['kindername']} — {k.get('establish')} · {k.get('addr')}")
+        w("")
+        for label, val in summary_items(k, info["sections"]):
+            if val:
+                w(f"- **{label}**: {val}")
+        web = info.get("web")
+        if web:
+            if "error" in web:
+                w(f"- ⚠ 웹 공시 조회 실패: {web['error']}")
+            else:
+                v = web.get("violations")
+                if isinstance(v, dict):
+                    w("- **시정명령 이력**: "
+                      + ("없음" if v.get("clean") else
+                         f"⚠ {len(v['items'])}건 — "
+                         + " / ".join(it["제목"] for it in v["items"])))
+                fee = fee_cell(k)
+                if fee:
+                    w(f"- **원비(만{age}세)**: {fee} — 상세: {web['costs']['url']}")
+                ev = web.get("eval")
+                if isinstance(ev, dict):
+                    pdfs = len(ev.get("보고서", []))
+                    w(f"- **유치원 평가**: {eval_cell(k)}"
+                      + (f", 평가결과 PDF {pdfs}건 공시" if pdfs else "")
+                      + f" — 열람: {ev['url']}")
+        s = info.get("sched")
+        if s and s.get("vacs"):
+            vv = " · ".join(f"{n} {d}일" for n, _s, _e, d in s["vacs"])
+            w(f"- **방학({s['year']}학년도, {s['school']} 기준)**: {vv}")
+        if roadview_url(k):
+            w(f"- 로드뷰(정차 여건): {roadview_url(k)}")
+        if k.get("telno"):
+            w(f"- 전화: {k['telno']}")
+        w("")
+        w("**방문·전화로 확인할 것**")
+        for q in visit_questions(k, info["sections"], web, s, age):
+            w(f"- [ ] {q}")
+
+    yr = next_admission_year()
+    w("")
+    w("## 3. 일정과 유의사항")
+    w(f"- **처음학교로 접수는 {yr - 1}년 11월경**입니다. 1~3지망, 최대 3곳까지 "
+      f"지원할 수 있습니다.")
+    w(f"- 공시는 연 2회 갱신됩니다. **{yr - 1}년 10월 말 2차 공시가 뜨면 "
+      f"`python kinderinfo.py refresh` 후 이 브리핑을 다시 만드세요.**")
+    w("- 원장·교사의 태도, 교실 분위기, 아이와의 궁합은 어떤 데이터에도 없습니다. "
+      "위 질문지를 들고 직접 확인하세요.")
+    w("- 근속 평균은 공시 구간의 중간값 가중 추정치, 방학은 모초등학교 기준 근사치, "
+      "직선거리는 언덕·도로를 무시한 하한값입니다.")
+
+    text = "\n".join(L)
+    if args.out:
+        Path(args.out).write_text(text, encoding="utf-8")
+        print(f"저장했습니다: {args.out} ({len(text):,}자)")
+    else:
+        print(text)
 
 
 # ----------------------------------------------------------- cmd: schedule
@@ -1382,6 +1729,16 @@ def main():
     sp.add_argument("names", help="쉼표로 구분한 유치원명들 (예: '가나,다라,마바')")
     sp.set_defaults(func=cmd_compare)
 
+    sp = sub.add_parser("report",
+                        help="최종 후보 브리핑(비교표+상세+방문 질문지, 저장 가능)")
+    add_common(sp)
+    add_age(sp)
+    sp.add_argument("names", help="쉼표로 구분한 유치원명 1~4곳")
+    sp.add_argument("--out", help="마크다운 파일로 저장 (예: --out 브리핑.md)")
+    sp.add_argument("--no-web", action="store_true",
+                    help="원비·시정명령 웹 조회 생략(빠르게)")
+    sp.set_defaults(func=cmd_report)
+
     sp = sub.add_parser("schedule",
                         help="병설유치원의 방학·학사일정(모초등학교 기준, NEIS)")
     add_common(sp)
@@ -1404,6 +1761,9 @@ def main():
 
     sp = sub.add_parser("regions", help="저장된 시군구 코드 목록")
     sp.set_defaults(func=cmd_regions)
+
+    sp = sub.add_parser("refresh", help="캐시를 비워 최신 공시를 새로 받게 함")
+    sp.set_defaults(func=cmd_refresh)
 
     args = p.parse_args()
     try:

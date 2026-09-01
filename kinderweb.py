@@ -30,6 +30,7 @@ BASE = "https://e-childschoolinfo.moe.go.kr"
 PAGES = {
     "cost": ("kinderEducateAndCost", "교육과정 교육비용"),
     "violation": ("kinderViolation", "위반내용"),
+    "operate": ("kinderOperate", "유치원 평가"),
 }
 TIMEOUT = 25
 AGE_HEADS = {3: "만 3세", 4: "만 4세", 5: "만 5세"}
@@ -275,6 +276,37 @@ def get_violations(itt_id):
     return out
 
 
+# ------------------------------------------------------------ 유치원 평가
+def parse_evaluation(html):
+    """유치원 평가 실시 이력과 평가결과 PDF 목록.
+
+    평가 '내용'은 PDF 첨부라 구조화되지 않는다 — 실시 여부와 문서 존재만 알려주고,
+    내용은 원본 링크에서 사람이 본다.
+    """
+    blocks = tables_of(html)
+    ev = _find_grid(blocks, "유치원 평가")
+    if ev is None or not ev or "평가 실시 여부" not in " ".join(ev[0]):
+        raise ParseChanged("유치원 평가 표를 찾지 못했습니다")
+    years = []
+    for r in ev[1:]:
+        if len(r) >= 3 and r[0].strip():
+            years.append({"학년도": r[0].strip(), "실시": r[1].strip(),
+                          "연월": r[2].strip()})
+    pdfs = []
+    for heading, grid in blocks:
+        if "평가소견" in heading and grid and "파일명" in " ".join(grid[0]):
+            for r in grid[1:]:
+                if len(r) >= 2 and ".pdf" in r[1].lower():
+                    pdfs.append(re.sub(r"\s*미리보기\s*$", "", r[1]).strip())
+    return {"실시": years, "보고서": pdfs}
+
+
+def get_evaluation(itt_id):
+    out = parse_evaluation(fetch("operate", itt_id))
+    out["url"] = page_url("operate", itt_id)
+    return out
+
+
 # ---------------------------------------------------------------- selftest
 # 자가진단 표본: 서울 강남구의 실제 유치원 1곳(공개 공시 데이터).
 SELFTEST_ID = "34140010-58e8-44b4-9e91-49d5eb6669e1"   # 강남유정유치원
@@ -285,6 +317,7 @@ def selftest(itt_id=SELFTEST_ID, verbose=True):
     checks = [
         ("원비 표 파싱", lambda: parse_costs(fetch("cost", itt_id))),
         ("시정명령 표 파싱", lambda: parse_violations(fetch("violation", itt_id))),
+        ("유치원 평가 표 파싱", lambda: parse_evaluation(fetch("operate", itt_id))),
     ]
     ok = True
     for name, fn in checks:

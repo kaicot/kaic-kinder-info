@@ -65,7 +65,7 @@ def _run(*argv: str) -> str:
 
 @mcp.tool()
 def search_kindergartens(region: str, age: int = 0, target: bool = False,
-                         estab: str = "", name: str = "",
+                         estab: str = "", name: str = "", near_km: float = 0,
                          sort: str = "name") -> str:
     """지역별 유치원 검색 — 학급/원아/정원/충원율/운영시간을 마크다운 표로 반환.
 
@@ -75,13 +75,17 @@ def search_kindergartens(region: str, age: int = 0, target: bool = False,
         target: True면 .env 의 CHILD_BIRTH_YM 으로 입학 연령반을 자동 계산
         estab: 설립유형 필터 — '공립' | '사립' | '국립' (빈값=전체)
         name: 유치원명 부분일치 필터
+        near_km: 집(.env 의 HOME_LATLNG)에서 직선 N km 이내만. 0이면 전체
         sort: 'name'(이름순) | 'size'(해당 연령 정원 많은순) | 'fill'(충원율순)
+              | 'dist'(집에서 가까운 순)
     """
     args = ["search", region, "--sort", sort]
     if target:
         args.append("--target")
     if age in (3, 4, 5):
         args += ["--age", str(age)]
+    if near_km and near_km > 0:
+        args += ["--near", str(near_km)]
     if estab:
         args += ["--estab", estab]
     if name:
@@ -107,15 +111,68 @@ def kindergarten_profile(region: str, name: str, web: bool = False) -> str:
 
 
 @mcp.tool()
-def compare_kindergartens(region: str, names: str) -> str:
-    """여러 유치원의 핵심 지표(만3세 학급당 원아, 충원율, 교사 근속, CCTV,
-    통학차량, 방과후 참여율 등)를 마크다운 비교표로 반환.
+def compare_kindergartens(region: str, names: str, age: int = 0,
+                          target: bool = False) -> str:
+    """여러 유치원의 핵심 지표(연령별 학급당 원아, 충원율, 교사 근속, CCTV,
+    통학차량, 방과후 포함 운영일수 등)를 마크다운 비교표로 반환.
 
     Args:
         region: '서울 강남구' 또는 '서울' 같은 지역
         names: 쉼표로 구분한 유치원명들 (예: '햇살,푸른숲,○○초등학교병설')
+        age: 기준 연령반(3|4|5). 0이면 만3세 기준
+        target: True면 .env 의 CHILD_BIRTH_YM 으로 기준 연령을 자동 계산
     """
-    return _run("compare", region, names)
+    args = ["compare", region, names]
+    if target:
+        args.append("--target")
+    if age in (3, 4, 5):
+        args += ["--age", str(age)]
+    return _run(*args)
+
+
+@mcp.tool()
+def kindergarten_schedule(region: str, name: str, year: int = 0,
+                          meals: bool = False) -> str:
+    """초등학교 병설유치원의 방학·학사일정(모초등학교 기준, NEIS).
+    "방학 언제야?" 류 질문에 사용. 사립·단설은 조회되지 않으며 그 사실과
+    연락처를 안내한다. .env 에 NEIS_API_KEY 필요(없으면 발급 안내가 나온다).
+
+    Args:
+        region: '서울 강남구' 같은 지역
+        name: 유치원명 부분일치 (병설유치원)
+        year: 학년도(예: 2026). 0이면 현재 학년도
+        meals: True면 모초등학교 급식 식단도 함께 표시
+    """
+    args = ["schedule", region, name]
+    if year:
+        args += ["--year", str(year)]
+    if meals:
+        args.append("--meals")
+    return _run(*args)
+
+
+@mcp.tool()
+def kindergarten_report(region: str, names: str, age: int = 0,
+                        target: bool = False, no_web: bool = False) -> str:
+    """최종 후보 브리핑 — 비교표 + 유치원별 상세 + **방문·전화 질문지**를
+    한 문서로 만든다. 후보를 2~3곳으로 좁힌 뒤 "브리핑/보고서 만들어줘",
+    "방문 때 뭘 물어볼까" 류 요청에 사용. 원비·시정명령(웹 공시)도 기본 포함.
+
+    Args:
+        region: '서울 강남구' 같은 지역
+        names: 쉼표로 구분한 유치원명 1~4곳
+        age: 기준 연령반(3|4|5). 0이면 만3세
+        target: True면 .env 의 CHILD_BIRTH_YM 으로 기준 연령 자동 계산
+        no_web: True면 원비·시정명령 웹 조회 생략(빠르게)
+    """
+    args = ["report", region, names]
+    if target:
+        args.append("--target")
+    if age in (3, 4, 5):
+        args += ["--age", str(age)]
+    if no_web:
+        args.append("--no-web")
+    return _run(*args)
 
 
 @mcp.tool()
