@@ -25,7 +25,7 @@ import urllib.request
 from datetime import datetime, timedelta
 from pathlib import Path
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.stderr.reconfigure(encoding="utf-8", errors="replace")
@@ -532,11 +532,73 @@ def tenure_stats(row):
     return total, round(avg, 1), under1, over6
 
 
+def afterschool_participants(a):
+    """방과후과정 참여 원아수.
+
+    공시 양식이 두 가지다 — 인가 학급 그대로 편성(inor_)하거나 오후에 재편성(pm_rrgn_).
+    한쪽만 세면 다른 양식으로 공시한 유치원이 참여 0명으로 잘못 나온다.
+    """
+    if not a:
+        return None
+    vals = [to_int(a.get(k))
+            for k in ("inor_ptcn_kpcnt", "pm_rrgn_ptcn_kpcnt")]
+    vals = [v for v in vals if v is not None]
+    return sum(vals) if vals else None
+
+
 def afterschool_rate(a, b):
-    part, tp = to_int((a or {}).get("inor_ptcn_kpcnt")), total_pupils(b)
+    part, tp = afterschool_participants(a), total_pupils(b)
     if part is None or not tp:
         return None
     return round(100 * part / tp)
+
+
+def attendance_days(lesson_row, age=None):
+    """(정규 수업일수, 방과후 포함 운영일수) 반환.
+
+    병설유치원은 초등학교 학사일정을 따라 정규 수업일수가 법정 최소(180일)에 가깝고,
+    방학은 방과후과정으로 메운다. 두 값의 차이가 '방과후에 기대야 하는 날'이다.
+    """
+    if not lesson_row:
+        return None, None
+    keys = [f"ag{age}_lsn_dcnt"] if age else []
+    keys += [f"ag{a}_lsn_dcnt" for a in AGE_CLASSES] + ["mix_age_lsn_dcnt"]
+    regular = next((v for v in (to_int(lesson_row.get(k)) for k in keys) if v), None)
+    total = to_int(lesson_row.get("afsc_pros_lsn_dcnt"))
+    return regular, total
+
+
+def is_annex(b):
+    """초등학교 병설 여부. 병설은 초등 학사일정을 따라 방학이 길다."""
+    return "병설" in str(b.get("establish") or b.get("estb_pt") or "")
+
+
+def attendance_note(lesson_row, b=None):
+    """'정규 180일 + 방과후로 52일 = 232일' 형태의 안내 문구."""
+    regular, total = attendance_days(lesson_row)
+    if not regular and not total:
+        return None
+    if not total or not regular:
+        return f"정규 수업 {regular or total}일"
+    gap = total - regular
+    note = f"정규 수업 {regular}일 / 방과후 포함 {total}일"
+    if gap > 0:
+        note += f" (차이 {gap}일은 방학 등, 방과후과정으로 운영)"
+    if b is not None and is_annex(b) and regular <= 190:
+        note += " ※병설: 정규 일수가 법정 최소(180일)에 가까움"
+    return note
+
+
+def operating_note(b, asp_row=None):
+    """공시 운영시간은 '문 여는 시간'이지 정규 교육과정 시간이 아니다."""
+    base = b.get("opertime")
+    if not base:
+        return None
+    after = (asp_row or {}).get("oper_time")
+    note = str(base)
+    if after and str(after) != str(base):
+        note += f" / 방과후 {after}"
+    return note + " (문 여는 시간 기준. 정규 교육과정은 1일 4~5시간이고 나머지는 방과후·돌봄)"
 
 
 def area_per_pupil(c, b):
@@ -739,6 +801,8 @@ def cmd_profile(args):
     safe_row = safe[0] if isinstance(safe, list) and safe else None
     bus = sections.get("schoolBus")
     bus_row = bus[0] if isinstance(bus, list) and bus else None
+    lsn = sections.get("lessonDay")
+    lsn_row = lsn[0] if isinstance(lsn, list) and lsn else None
 
     print(f"# {b['kindername']} 종합 리포트")
     print(f"{b.get('_sgg_name')} · {one_line_summary(b)} · "
@@ -765,8 +829,10 @@ def cmd_profile(args):
          else ("미운행" if bus_row else None)),
         ("방과후 참여율",
          f"{afterschool_rate(asp_row, b)}% (참여 "
-         f"{to_int(asp_row.get('inor_ptcn_kpcnt'))}명)"
+         f"{afterschool_participants(asp_row)}명)"
          if asp_row and afterschool_rate(asp_row, b) is not None else None),
+        ("등원 가능일수", attendance_note(lsn_row, b)),
+        ("운영시간", operating_note(b, asp_row)),
     ]
     for label, val in items:
         if val:
@@ -857,7 +923,17 @@ def cmd_compare(args):
         rate = afterschool_rate(r, k)
         if rate is None:
             return None
-        return f"{rate}% ({to_int(r.get('inor_ptcn_kpcnt'))}명)"
+        return f"{rate}% ({afterschool_participants(r)}명)"
+
+    def total_days(k):
+        _, total = attendance_days(aux[k["kindercode"]].get("lessonDay"), age)
+        return f"{total}일" if total else None
+
+    def vacation_gap(k):
+        reg, total = attendance_days(aux[k["kindercode"]].get("lessonDay"), age)
+        if not reg or not total:
+            return None
+        return f"{total - reg}일" + (" (병설)" if is_annex(k) else "")
 
     def app(k):
         return (f"{area_per_pupil(aux[k['kindercode']].get('classArea'), k)}㎡"
@@ -868,6 +944,8 @@ def cmd_compare(args):
         if not r:
             return None
         v = to_int(r.get(f"ag{age}_lsn_dcnt"))
+        if not v:   # 해당 연령반이 없으면(예: 혼합반만 운영) 0 이 온다
+            return None
         blw = r.get("ldnum_blw_yn")
         return f"{v}일" + (" ⚠법정미달" if blw == "Y" else "")
 
@@ -892,7 +970,9 @@ def cmd_compare(args):
                lambda k: f"{total_pupils(k)}/{to_int(k.get('prmstfcnt'))}명")
     metric_row("충원율", lambda k: f"{fill_rate(k)}%" if fill_rate(k) is not None else None)
     metric_row("교사 근속", ten)
-    metric_row(f"만{age}세 수업일수", lesson_days)
+    metric_row(f"만{age}세 정규 수업일수", lesson_days)
+    metric_row("방과후 포함 운영일수", total_days)
+    metric_row("방과후 의존일수(방학 등)", vacation_gap)
     metric_row("원아 1인당 교실면적", app)
     metric_row("CCTV", cctv)
     metric_row("통학차량", bus)
