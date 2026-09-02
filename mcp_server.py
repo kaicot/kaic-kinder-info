@@ -104,7 +104,8 @@ def search_kindergartens(region: str, age: int = 0, target: bool = False,
 
 
 @mcp.tool()
-def kindergarten_profile(region: str, name: str, web: bool = False) -> str:
+def kindergarten_profile(region: str, name: str, web: bool = False,
+                         extended: bool = False) -> str:
     """유치원 1곳의 전체 공시 항목 종합 리포트(기본현황·건물·수업일수·교사근속·
     통학차량·안전점검·CCTV·환경위생·보험·방과후 등 + 파생 지표).
 
@@ -114,10 +115,14 @@ def kindergarten_profile(region: str, name: str, web: bool = False) -> str:
         web: True면 연령별 전용·혼합 학급 구성, 원비·시정명령 이력을
              유치원알리미 웹에서 함께 조회(수 초 추가). 혼합반, 원비,
              행정처분을 물으면 True로 호출할 것
+        extended: True면 급식·보건·재정·자차 경로 사고다발지·통학버스와
+                  병설 모초등학교 보조정보까지 조회
     """
     args = ["profile", region, name]
     if web:
         args.append("--web")
+    if extended:
+        args.append("--extended")
     return _run(*args)
 
 
@@ -165,7 +170,7 @@ def kindergarten_schedule(region: str, name: str, year: int = 0,
 @mcp.tool()
 def kindergarten_report(region: str = "", names: str = "", age: int = 0,
                         target: bool = False, no_web: bool = False,
-                        questions: bool = False) -> str:
+                        questions: bool = False, extended: bool = False) -> str:
     """최종 후보 브리핑 — 비교표 + 유치원별 상세 + 추이를 한 문서로 만든다.
     후보를 좁힌 뒤 "브리핑 만들어줘" 류 요청에 사용. 방문·전화 질문지는
     사용자가 명시적으로 요청했을 때만 questions=True로 추가한다.
@@ -179,6 +184,7 @@ def kindergarten_report(region: str = "", names: str = "", age: int = 0,
         target: True면 .env 의 CHILD_BIRTH_YM 으로 기준 연령 자동 계산
         no_web: True면 원비·시정명령 웹 조회 생략(빠르게)
         questions: True면 방문·전화 확인 질문 목록 추가. 기본은 False
+        extended: True면 급식·보건·재정·교통안전·통학버스까지 포함
     """
     args = ["report"]
     if region and names:
@@ -191,7 +197,58 @@ def kindergarten_report(region: str = "", names: str = "", age: int = 0,
         args.append("--no-web")
     if questions:
         args.append("--questions")
+    if extended:
+        args.append("--extended")
     return _run(*args)
+
+
+@mcp.tool()
+def kindergarten_bus(region: str, name: str, fresh: bool = False) -> str:
+    """학교안전지원시스템 통학버스 등록현황을 유치원알리미와 교차확인한다.
+    차량번호와 개인 이름은 표시하지 않는다."""
+    args = ["bus", region, name]
+    if fresh: args.append("--fresh")
+    return _run(*args)
+
+
+@mcp.tool()
+def kindergarten_traffic_safety(region: str, name: str,
+                                recent_years: int = 5, fresh: bool = False) -> str:
+    """집→유치원 OSRM 자차 경로와 도로교통공단 공식 어린이 사고다발지
+    폴리곤의 교차를 분석한다. 실시간 교통은 반영하지 않고 0건은 안전 판정이 아니다."""
+    args = ["traffic", region, name, "--years", str(recent_years)]
+    if fresh: args.append("--fresh")
+    return _run(*args)
+
+
+@mcp.tool()
+def annex_school_context(region: str, name: str, year: int = 0,
+                         fresh: bool = False) -> str:
+    """초등학교 병설유치원의 모초등학교 학교알리미 보조정보. 유치원 자체
+    공시가 아니라는 한계를 함께 표시한다."""
+    args = ["mother-school", region, name]
+    if year: args += ["--year", str(year)]
+    if fresh: args.append("--fresh")
+    return _run(*args)
+
+
+@mcp.tool()
+def kindergarten_extended_disclosure(region: str, name: str,
+                                      section: str = "health") -> str:
+    """유치원알리미 웹 공시 확장 조회.
+
+    Args:
+        section: health(급식·보건·환경) 또는 finance(예산·결산)
+    """
+    if section not in ("health", "finance"):
+        return "[오류] section은 health 또는 finance여야 합니다."
+    return _run(section, region, name)
+
+
+@mcp.tool()
+def kindergarten_source_status() -> str:
+    """API 키 설정 여부, 도로교통공단 자동 CSV, 통학버스 자동·수동 자료 상태."""
+    return _run("sources")
 
 
 @mcp.tool()

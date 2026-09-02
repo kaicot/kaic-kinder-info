@@ -65,36 +65,49 @@ def haversine_km(a, b):
     return 2 * r * math.asin(math.sqrt(h))
 
 
-def driving(a, b, use_cache=True):
-    """자차 경로 (도로거리 km, 소요 분). 실패하면 (None, None).
+def driving_route(a, b, use_cache=True, geometry=False):
+    """자차 경로 원자료. geometry=True면 전체 GeoJSON 좌표도 받는다.
 
     좌표는 (위도, 경도). 결과는 영구 캐시된다 — 위치가 바뀌지 않기 때문이다.
     """
     if not a or not b:
-        return None, None
+        return None
     CACHE.mkdir(parents=True, exist_ok=True)
-    f = CACHE / f"{_key(a, b)}.json"
+    suffix = "_full" if geometry else ""
+    f = CACHE / f"{_key(a, b)}{suffix}.json"
     if use_cache and f.exists():
         try:
-            d = json.loads(f.read_text(encoding="utf-8"))
-            return d.get("km"), d.get("min")
+            return json.loads(f.read_text(encoding="utf-8"))
         except ValueError:
             pass
 
-    url = OSRM.format(a=f"{a[1]},{a[0]}", b=f"{b[1]},{b[0]}") + "?overview=false"
+    overview = "full&geometries=geojson" if geometry else "false"
+    url = (OSRM.format(a=f"{a[1]},{a[0]}", b=f"{b[1]},{b[0]}")
+           + f"?overview={overview}")
     req = urllib.request.Request(url, headers={"User-Agent": "kaic-kinder-info/1.7"})
     try:
         _throttle()
         with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
             d = json.loads(r.read().decode("utf-8"))
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
-        return None, None      # 지어내지 않는다
+        return None      # 지어내지 않는다
     if d.get("code") != "Ok" or not d.get("routes"):
-        return None, None
+        return None
     route = d["routes"][0]
-    km, minutes = route["distance"] / 1000, route["duration"] / 60
-    f.write_text(json.dumps({"km": km, "min": minutes}), encoding="utf-8")
-    return km, minutes
+    out = {"km": route["distance"] / 1000,
+           "min": route["duration"] / 60}
+    if geometry:
+        out["geometry"] = (route.get("geometry") or {}).get("coordinates") or []
+    tmp = f.with_suffix(f.suffix + ".tmp")
+    tmp.write_text(json.dumps(out, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(f)
+    return out
+
+
+def driving(a, b, use_cache=True):
+    """자차 경로 (도로거리 km, 소요 분). 실패하면 (None, None)."""
+    out = driving_route(a, b, use_cache=use_cache, geometry=False)
+    return ((out.get("km"), out.get("min")) if out else (None, None))
 
 
 def detour_ratio(km, straight_km):
@@ -108,7 +121,8 @@ def describe(km, minutes, straight_km=None):
     """'1.20km / 2.9분 (직선의 2.2배)' 형태 문구. 값이 없으면 None."""
     if km is None:
         return None
-    out = f"{km:.2f}km / {minutes:.0f}분"
+    minute_text = f"{minutes:.1f}분" if minutes < 1 else f"{minutes:.0f}분"
+    out = f"{km:.2f}km / {minute_text}"
     r = detour_ratio(km, straight_km)
     if r:
         out += f" (직선의 {r:.1f}배{'  ⚠' if r >= 2.0 else ''})"

@@ -75,7 +75,7 @@ def _call(svc, key, **params):
 
 # ------------------------------------------------------------------ 학교 매칭
 def school_name_of(kindername):
-    """'연포초등학교병설유치원' → '연포초등학교'. 병설이 아니면 None."""
+    """'○○초등학교병설유치원' → '○○초등학교'. 병설이 아니면 None."""
     name = str(kindername or "")
     if "병설" not in name:
         return None

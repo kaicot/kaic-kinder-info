@@ -17,11 +17,13 @@
 |---|---|---|---|
 | `KINDER_API_KEY` | **필수** | 유치원알리미 → 자료실 → OPEN API | `search` `profile` `compare` `discover` |
 | `NEIS_API_KEY` | 선택 | open.neis.go.kr | `schedule` (병설유치원 방학·급식) |
+| `SCHOOLINFO_API_KEY` | 선택 | schoolinfo.go.kr → Open API | `mother-school` (병설 모초교 급식·보건·시설안전) |
 | `HOME_LATLNG` | 선택 | **네이버지도 [공유] 링크** → `kinderinfo.py home "링크"` | `--near`, `--road`, `--sort dist` |
 | `CHILD_BIRTH_YM` | 선택 | 직접 입력 | `--target` (입학 연령반 자동 계산) |
 
 **키가 필요 없는 기능**: `search --age`의 혼합반 세부 연령 확인,
 `profile --web`(연령별 학급·원비·시정명령·운영시간 — 웹 공시를 직접 읽음),
+`health`·`finance`, `traffic`(도로교통공단 CSV+OSRM), `bus`(학교안전지원시스템),
 로드뷰·지도 링크. 사용자가 선택 키를 안 만들었어도 이 기능들은 항상 동작합니다.
 선택 기능을 쓰려는 순간에만 해당 키를 받자고 제안하세요 — 처음부터 다 받게 하지 마세요.
 
@@ -163,6 +165,13 @@ CHILD_BIRTH_YM=2020-03
 
 **없어도 다른 기능은 모두 정상 동작합니다.** 사립·단설만 볼 거라면 건너뛰어도 됩니다.
 
+### 7-3단계. (선택) 학교알리미 인증키 — 병설 모초등학교 보조정보
+
+병설유치원의 모초등학교 급식·보건·시설안전을 함께 보려는 경우에만 권하세요.
+https://www.schoolinfo.go.kr 에서 Open API 키를 발급받아 `.env`에
+`SCHOOLINFO_API_KEY=...`로 넣습니다. 2026년 이후 신규 키는 시도·시군구가 필수지만
+도구가 자동으로 전달합니다. 결과는 **유치원 자체가 아닌 모초등학교 공시**라고 항상 설명하세요.
+
 ### 8단계. (선택) MCP 등록 — 매번 폴더를 찾지 않고 쓰기
 
 MCP로 등록해 두면 사용자가 아무 대화창에서나 "강남구 유치원 알려줘"라고 말만 해도
@@ -223,6 +232,12 @@ python sync_skill.py
 | "공립만 보여줘" | `search "서울 강남구" --age 3 --estab 공립` |
 | "○○유치원 자세히" | `profile "서울 강남구" ○○` |
 | "혼합반에 만3세 받아?" / "원비 얼마야?" / "행정처분 있었어?" | `profile "서울 강남구" ○○ --web` |
+| "보건·환경도 봐줘" | `health "서울 강남구" ○○` |
+| "예산·결산 추이" | `finance "서울 강남구" ○○` |
+| "가는 길 사고다발지 있어?" | `traffic "서울 강남구" ○○` — 실제 자차 경로와 공식 폴리곤 교차 |
+| "통학버스 등록 확인해줘" | `bus "서울 강남구" ○○` — 두 공식 출처 교차 |
+| "병설 모초등학교 환경도 봐줘" | `mother-school "서울 강남구" ○○초등학교병설` |
+| "모든 출처까지 자세히" | `profile "서울 강남구" ○○ --extended` |
 | "후보 정리해줘" | `report "서울 강남구" "A,B,C" --target --out 브리핑.md` |
 | "실제 운영시간 비교해줘" | `hours "서울 강남구" "A,B,C" --target` — 출처·학년도 구분 |
 | "방문 때 뭘 물어볼까?" | `report "서울 강남구" "A,B,C" --target --questions` — 명시 요청 때만 |
@@ -232,6 +247,7 @@ python sync_skill.py
 | "추세가 어때?" / "좋아지고 있어?" | `trend` (후보 저장 시 인자 불필요) |
 | "새 공시에서 뭐 바뀌었어?" | `diff` |
 | "공시 새로 떴대" / 자료가 오래됨 | `refresh` 후 다시 조회, 후보가 있으면 `diff` |
+| "통학버스 엑셀 업데이트해줘" + XLSX 첨부 | 첨부 경로 확인 → `bus-import "<경로>"` → `bus-status` 검증 |
 | "A랑 B 비교해줘" | `compare "서울 강남구" "A,B"` |
 | "거기 방학 언제야?" | `schedule "서울 강남구" ○○초등학교병설` (병설만) |
 | "정원 많은 순으로" | `search ... --sort size` |
@@ -284,7 +300,10 @@ API 원본 응답을 직접 확인하세요.
 | `verified_hours.py` | 공식 계획서에서 사람이 검증한 세부 운영시간의 로컬 저장·검산. 실제 `verified_hours.json`은 gitignore |
 | `kinderbulk.py` | 과거 공시 차수 일괄 데이터(추이·diff 데이터원). 키 불필요, 과거 차수는 영구 캐시 |
 | `route.py` | 자차 도로 경로(OSRM 공개 서버)와 지도 링크→좌표 추출. 키 불필요, 경로는 영구 캐시 |
-| `mcp_server.py` | CLI를 MCP 도구 13종으로 노출 |
+| `schoolinfo.py` | 학교알리미 API. 병설 모초등학교 보조정보, 시도·시군구·공시연도 필수 처리 |
+| `traffic_safety.py` | 도로교통공단 공식 CSV 자동 갱신 + OSRM 자차 경로와 사고다발지 폴리곤 교차 |
+| `schoolbus.py` | 학교안전지원시스템 통학버스 자동 조회와 XLSX 비상 가져오기. 식별정보 비표시 |
+| `mcp_server.py` | CLI를 MCP 도구 18종으로 노출 |
 | `sync_skill.py` | 스킬 원본을 Claude/Codex 폴더에 배포 |
 | `check_docs.py` | 문서 동기화 점검(MCP 목록·구조 표·버전·명령). 릴리스 전 필수 |
 | `skill/kaic-kinder-info/SKILL.md` | 스킬 **원본**. 반드시 여기만 고칠 것 |
@@ -307,7 +326,10 @@ API 원본 응답을 직접 확인하세요.
 python kinderinfo.py --version
 python kinderinfo.py search 11680 --limit 3 --fresh    # API 왕복 확인
 python kinderinfo.py profile 11680 강남유정             # 14개 항목 파싱 확인
-python kinderweb.py selftest                           # 웹 공시 파서 5종 확인
+python kinderweb.py selftest                           # 웹 공시 파서 8종 확인(사립·공립 회계 포함)
+python schoolinfo.py selftest                          # 학교알리미 신규 키·시군구 호출
+python traffic_safety.py selftest                      # 도로교통공단 CSV·폴리곤
+python schoolbus.py selftest                           # 통학버스 공개 조회 화면
 python kinderinfo.py hours 11680 "강남유정" --year 2027 # 운영시간 출처·학년도 표시 확인
 ```
 
@@ -342,3 +364,7 @@ README·AGENTS·스킬 원본의 해당 표와 목록을 그 자리에서 갱신
 - **Open API의 `mixclcnt`는 혼합반 수만 주고 3~4세/4~5세/3~5세 구분을 주지 않습니다.**
   연령 필터에서 전용반만 보면 실제 후보를 조용히 누락합니다. `kinderweb.get_age_classes()`의
   현재 웹 학급표로 확인하고, 웹 실패 시에는 후보를 버리지 말고 '구성 미확인'으로 남기세요.
+- **교통안전은 직선 반경으로 판단하지 마세요.** `traffic`은 OSRM 전체 자차 경로와
+  도로교통공단의 공식 폴리곤을 교차합니다. 0건도 안전 판정이 아니라 선정 기준 비해당입니다.
+- **통학버스 한쪽 출처 누락을 미운행으로 단정하지 마세요.** 유치원알리미와
+  학교안전지원시스템 상태를 나란히 표시하고, 차량번호·운영자 이름은 출력하지 않습니다.

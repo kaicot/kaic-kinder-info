@@ -26,7 +26,7 @@ import urllib.request
 from datetime import datetime, timedelta
 from pathlib import Path
 
-__version__ = "1.9.0"
+__version__ = "1.10.0"
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.stderr.reconfigure(encoding="utf-8", errors="replace")
@@ -411,6 +411,33 @@ def notify_new_disclosure():
 
 def cmd_refresh(args):
     """캐시를 비워 다음 조회부터 최신 공시를 새로 받게 한다."""
+    source = getattr(args, "source", None)
+    if source == "traffic":
+        try:
+            import traffic_safety
+            result = traffic_safety.refresh()
+            updated = sum(1 for v in result.values() if v.get("updated"))
+            print(f"도로교통공단 공식 CSV {updated}/2종을 갱신했습니다. "
+                  "갱신되지 않은 항목은 마지막 정상 캐시를 유지합니다.")
+        except Exception as e:  # noqa: BLE001
+            sys.exit(f"[오류] 교통안전 자료 갱신 실패: {e}")
+        return
+    if source == "bus":
+        try:
+            import schoolbus
+            n = schoolbus.clear_cache(live_only=True)
+            print(f"통학버스 자동 조회 캐시 {n}개를 비웠습니다. 다음 조회 때 최신 화면을 읽습니다.")
+        except Exception as e:  # noqa: BLE001
+            sys.exit(f"[오류] 통학버스 캐시 갱신 실패: {e}")
+        return
+    if source == "schoolinfo":
+        try:
+            import schoolinfo
+            n = schoolinfo.clear_cache()
+            print(f"학교알리미 캐시 {n}개를 비웠습니다. 다음 조회 때 최신 공시를 읽습니다.")
+        except Exception as e:  # noqa: BLE001
+            sys.exit(f"[오류] 학교알리미 캐시 갱신 실패: {e}")
+        return
     n = 0
     if CACHE_DIR.exists():
         for f in CACHE_DIR.glob("*.json"):
@@ -421,6 +448,22 @@ def cmd_refresh(args):
         n += kinderweb.clear_cache()
     except (ImportError, OSError):
         pass
+    if getattr(args, "all", False):
+        try:
+            import schoolinfo
+            n += schoolinfo.clear_cache()
+        except (ImportError, OSError):
+            pass
+        try:
+            import schoolbus
+            n += schoolbus.clear_cache(live_only=True)
+        except (ImportError, OSError):
+            pass
+        try:
+            import traffic_safety
+            traffic_safety.refresh()
+        except Exception as e:  # noqa: BLE001
+            print(f"[안내] 교통안전 CSV 갱신만 실패했습니다: {e}", file=sys.stderr)
     print(f"캐시 {n}개 파일을 비웠습니다. 다음 조회부터 최신 공시를 새로 받습니다."
           " (과거 차수 벌크 자료는 불변이라 보존됩니다)")
 
@@ -1325,6 +1368,142 @@ def render_web_extras(b, out=None, fresh=False):
     print()
 
 
+# ------------------------------------------------------- 확장 데이터(선택)
+def gather_extended(b, fresh=False):
+    """웹 공시·학교알리미·교통·통학버스를 독립적으로 수집한다.
+
+    한 출처가 실패해도 나머지는 유지한다. 각 실패는 error 문자열로 남긴다.
+    """
+    out = {}
+    try:
+        import kinderweb
+        out["sanitation"] = kinderweb.get_sanitation(b["kindercode"], fresh=fresh)
+    except Exception as e:  # noqa: BLE001
+        out["sanitation"] = {"error": str(e)}
+    try:
+        import kinderweb
+        out["finance"] = kinderweb.get_finance(b["kindercode"], fresh=fresh)
+    except Exception as e:  # noqa: BLE001
+        out["finance"] = {"error": str(e)}
+    try:
+        import schoolbus
+        out["bus"] = schoolbus.query(b.get("kindername"), b.get("addr"),
+                                      b.get("_sido"), fresh=fresh)
+    except Exception as e:  # noqa: BLE001
+        out["bus"] = {"error": str(e)}
+    if home_coords() and coords_of(b):
+        try:
+            import traffic_safety
+            out["traffic"] = traffic_safety.analyze(
+                home_coords(), coords_of(b), fresh=fresh)
+        except Exception as e:  # noqa: BLE001
+            out["traffic"] = {"error": str(e)}
+    if is_annex(b):
+        try:
+            import schoolinfo
+            out["mother_school"] = schoolinfo.context(
+                b, get_setting("SCHOOLINFO_API_KEY"),
+                year=current_school_year(), fresh=fresh)
+        except Exception as e:  # noqa: BLE001
+            out["mother_school"] = {"error": str(e)}
+    return out
+
+
+def bus_crosscheck(live, api_row):
+    api_operates = bool(api_row and api_row.get("vhcl_oprn_yn") == "Y")
+    api_count = to_int(api_row.get("opra_vhcnt")) if api_row else None
+    if not isinstance(live, dict) or live.get("error"):
+        return "한쪽 출처 조회 불가"
+    if live.get("status") in ("not_found", "ambiguous"):
+        return "출처 간 불일치" if api_operates else "양쪽 모두 미운영"
+    live_count = live.get("vehicle_count")
+    if not api_operates and (live_count or 0) > 0:
+        return "추가 등록 확인(유치원알리미와 불일치)"
+    if api_operates and live_count == api_count:
+        return "두 출처 일치"
+    if api_operates:
+        return "출처 간 차량 수 불일치"
+    return "양쪽 모두 미운영"
+
+
+def extended_lines(b, ext, sections=None):
+    """확장 데이터를 짧은 마크다운 문장으로 만든다."""
+    lines = []
+    san = ext.get("sanitation") or {}
+    if san.get("error"):
+        lines.append(f"- ⚠ 급식·보건·환경 조회 실패: {san['error']}")
+    elif san:
+        lines.append(f"- **유치원 보건·환경** ({san.get('기준') or '웹 공시'}):")
+        for key in ("식중독", "실내공기질", "소독", "음용수", "미세먼지", "조도"):
+            d = san.get(key) or {}
+            if d:
+                lines.append(f"  - {key}: " + " · ".join(f"{k} {v}" for k, v in d.items()))
+        files = san.get("식단표") or []
+        lines.append(f"  - 식단표({san.get('식단연월')}): " +
+                     (", ".join(f.get("파일명") or "식단표" for f in files) if files
+                      else "등록 파일 확인되지 않음"))
+        lines.append(f"  - 원본: {san.get('url')}")
+    fin = ext.get("finance") or {}
+    if fin.get("error"):
+        lines.append(f"- ⚠ 재정 조회 실패: {fin['error']}")
+    elif fin:
+        budgets = fin.get("예산추이") or []
+        actuals = fin.get("결산추이") or []
+        if budgets:
+            lines.append("- **예산 추이(천원)**: " + " → ".join(
+                f"{r['연도차수']} {r['예산액천원']:,}" for r in budgets))
+        if actuals:
+            lines.append("- **결산 추이(천원, 수납/지출)**: " + " → ".join(
+                f"{r['연도']} {r['수납액천원']:,}/{r['지출액천원']:,}" for r in actuals))
+        lines.append(f"  - 원본: {fin.get('url')}")
+    bus = ext.get("bus") or {}
+    api_bus = first_row(sections or {}, "schoolBus") if sections else None
+    if bus.get("error"):
+        lines.append(f"- ⚠ 통학버스 등록현황 조회 실패: {bus['error']}")
+    elif bus.get("status"):
+        lines.append(f"- **통학버스 교차확인**: {bus_crosscheck(bus, api_bus)} "
+                     f"(학교안전지원시스템 {bus.get('status')})")
+    elif bus:
+        sizes = " · ".join(f"{k} {v}대" for k, v in (bus.get("vehicle_sizes") or {}).items()) or "규모 미상"
+        lines.append(f"- **통학버스 등록**: {bus.get('vehicle_count', 0)}대 ({sizes}) · "
+                     f"{bus_crosscheck(bus, api_bus)}")
+        if bus.get("driver_training"):
+            lines.append("  - 운전자 교육: " + " · ".join(
+                f"{k} {v}명" for k, v in bus["driver_training"].items()))
+        if bus.get("companion_training"):
+            lines.append("  - 동승자 교육: " + " · ".join(
+                f"{k} {v}명" for k, v in bus["companion_training"].items()))
+    tr = ext.get("traffic") or {}
+    if tr.get("error"):
+        lines.append(f"- ⚠ 자차 경로 교통안전 분석 실패: {tr['error']}")
+    elif tr:
+        minute_text = f"{tr['minutes']:.1f}분" if tr["minutes"] < 1 else f"{tr['minutes']:.0f}분"
+        lines.append(f"- **자차 경로 교통안전**: 도로 {tr['road_km']:.2f}km / {minute_text} · "
+                     f"경로상 공식 사고다발지 {len(tr['route_hits'])}곳 · "
+                     f"유치원 출입구 포함 {len(tr['entrance_hits'])}곳")
+        if tr["route_hits"]:
+            for hit in tr["route_hits"][:5]:
+                lines.append(f"  - {hit['year']} {hit['name']} ({hit['accidents']}건, {hit['kind']})")
+        lines.append(f"  - 자료연도: {min(tr['years'])}~{max(tr['years'])} · "
+                     "0건은 안전 판정이 아니라 공식 사고다발지 선정 기준 비해당")
+    ms = ext.get("mother_school")
+    if isinstance(ms, dict) and ms.get("error"):
+        lines.append(f"- ⚠ 모초등학교 정보 조회 실패: {ms['error']}")
+    elif ms:
+        school = ms["school"]
+        lines.append(f"- **모초등학교 보조정보**: {school.get('SCHUL_NM')} ({ms.get('year')}년) "
+                     "— 아래 값은 유치원 자체가 아닌 모초등학교 공시")
+        meal = (ms.get("meal") or [None])[0]
+        if meal:
+            lines.append(f"  - 급식: {meal.get('OPER_MET_CODE') or '-'} · 급식 학생 {meal.get('MLSV_STDNT_FGR') or '-'}명 · "
+                         f"급식률 {meal.get('KS_RATE') if meal.get('KS_RATE') is not None else '-'}%")
+        safety = sorted(ms.get("safety") or [], key=lambda r: str(r.get("CK_YMD") or ""))
+        if safety:
+            lines.append("  - 시설안전 점검: " + " · ".join(
+                f"{fmt_date(r.get('CK_YMD'))} {r.get('CK_RSLT_CODE') or '-'}" for r in safety[-4:]))
+    return lines
+
+
 # ------------------------------------------------------------ cmd: profile
 PROFILE_SECTIONS = [
     ("building", None), ("classArea", None), ("lessonDay", None),
@@ -1399,14 +1578,16 @@ def cmd_profile(args):
     regions = resolve_region(args.region)
     b = find_kinder(regions, args.name, fresh=args.fresh)
     sections = gather_sections(b, fresh=args.fresh)
+    use_web = getattr(args, "web", False) or getattr(args, "extended", False)
     hours = (gather_hours(b, current_school_year(), fresh=args.fresh)
-             if getattr(args, "web", False) else None)
+             if use_web else None)
+    extended = gather_extended(b, fresh=args.fresh) if getattr(args, "extended", False) else None
 
     if args.json:
         out = {"basicInfo2": b}
         for ep, v in sections.items():
             out[ep] = v if isinstance(v, list) else {"status": v}
-        if getattr(args, "web", False):
+        if use_web:
             try:
                 import kinderweb
                 out["web"] = {
@@ -1422,6 +1603,8 @@ def cmd_profile(args):
                 }
             except Exception as e:  # noqa: BLE001 — 부가 정보라 본체를 막지 않는다
                 out["web"] = {"error": str(e)}
+        if extended is not None:
+            out["extended"] = extended
         print(json.dumps(out, ensure_ascii=False, indent=1))
         return
 
@@ -1443,8 +1626,14 @@ def cmd_profile(args):
               "이 정보는 어떤 공시·API에도 없으니 로드뷰로 길 폭과 갓길을 직접 보세요.")
         print()
 
-    if getattr(args, "web", False):
+    if use_web:
         render_web_extras(b, fresh=args.fresh)
+
+    if extended is not None:
+        print("## 확장 정보 — 보건·재정·교통안전·통학버스")
+        for line in extended_lines(b, extended, sections):
+            print(line)
+        print()
 
     print("## 기본현황")
     for line in render_kv(b):
@@ -1927,7 +2116,7 @@ def cmd_report(args):
     for k in kinders:
         code = k["kindercode"]
         info = {"sections": gather_sections(k, fresh=args.fresh),
-                "web": None, "sched": None, "hours": None}
+                "web": None, "sched": None, "hours": None, "extended": None}
         if not args.no_web:
             web = {}
             try:
@@ -1954,6 +2143,8 @@ def cmd_report(args):
                                      "vacs": vacs, "year": yr}
             except Exception:  # noqa: BLE001 — 부가 정보
                 pass
+        if getattr(args, "extended", False):
+            info["extended"] = gather_extended(k, fresh=args.fresh)
         per[code] = info
 
     trend_map = {}
@@ -2039,6 +2230,23 @@ def cmd_report(args):
     extra.append(("방학 합계(모초교 실측)", vacation_cell))
     if trend_map:
         extra.append(("충원율 추이(5개 차수)", fill_trend_cell))
+    if getattr(args, "extended", False):
+        def traffic_cell(k):
+            tr = (per[k["kindercode"]].get("extended") or {}).get("traffic") or {}
+            if not tr or tr.get("error"):
+                return None
+            minute_text = (f"{tr['minutes']:.1f}분" if tr["minutes"] < 1
+                           else f"{tr['minutes']:.0f}분")
+            return (f"{tr['road_km']:.2f}km/{minute_text} · "
+                    f"경로 {len(tr['route_hits'])}곳 · 출입구 {len(tr['entrance_hits'])}곳")
+
+        def bus_cell(k):
+            info = per[k["kindercode"]]
+            bus = (info.get("extended") or {}).get("bus") or {}
+            return bus_crosscheck(bus, first_row(info["sections"], "schoolBus")) if bus else None
+
+        extra += [("자차 경로 공식 사고다발지", traffic_cell),
+                  ("통학버스 출처 교차확인", bus_cell)]
 
     w("## 1. 한눈 비교")
     w("")
@@ -2094,6 +2302,11 @@ def cmd_report(args):
             w(f"- 로드뷰(정차 여건): {roadview_url(k)}")
         if k.get("telno"):
             w(f"- 전화: {k['telno']}")
+        if info.get("extended"):
+            w("")
+            w("**확장 정보**")
+            for line in extended_lines(k, info["extended"], info["sections"]):
+                w(line)
         ser = trend_map.get(k["kindercode"])
         if isinstance(ser, list):
             w("")
@@ -2115,8 +2328,10 @@ def cmd_report(args):
     w(f"- 공시는 연 2회 갱신됩니다. **{yr - 1}년 10월 말 2차 공시가 뜨면 "
       f"`python kinderinfo.py refresh` 후 이 브리핑을 다시 만드세요.**")
     w("- 원장·교사의 태도, 교실 분위기, 아이와의 궁합은 공시 데이터에 없습니다.")
-    w("- 근속 평균은 공시 구간의 중간값 가중 추정치, 방학은 모초등학교 기준 근사치, "
-      "직선거리는 언덕·도로를 무시한 하한값입니다.")
+    w("- 근속 평균은 공시 구간의 중간값 가중 추정치이고, 방학은 모초등학교 기준 근사치입니다.")
+    if getattr(args, "extended", False):
+        w("- 교통안전 분석은 OSRM 자차 경로와 도로교통공단 공식 사고다발지 폴리곤의 "
+          "교차 결과입니다. 실시간 교통은 반영하지 않으며 0건은 안전 판정이 아닙니다.")
 
     text = "\n".join(L)
     if args.out:
@@ -2321,6 +2536,160 @@ def cmd_schedule(args):
                       + (f" ({m['kcal']})" if m['kcal'] else ""))
 
 
+# --------------------------------------------------------- cmd: 확장 출처
+def _one_kinder(args):
+    return find_kinder(resolve_region(args.region), args.name, fresh=args.fresh)
+
+
+def cmd_health(args):
+    b = _one_kinder(args)
+    import kinderweb
+    data = kinderweb.get_sanitation(b["kindercode"], year=args.year,
+                                     month=args.month, fresh=args.fresh)
+    if args.json:
+        print(json.dumps(data, ensure_ascii=False, indent=1)); return
+    print(f"# {b['kindername']} 급식·보건·환경")
+    print(f"웹 공시 기준: {data.get('기준') or '-'}\n")
+    for key in ("식중독", "실내공기질", "소독", "음용수", "미세먼지", "조도"):
+        d = data.get(key) or {}
+        if d:
+            print(f"- **{key}**: " + " · ".join(f"{k} {v}" for k, v in d.items()))
+    files = data.get("식단표") or []
+    print(f"- **식단표({data.get('식단연월')})**: " +
+          (", ".join(f.get("파일명") or "식단표" for f in files) if files
+           else "등록 파일 확인되지 않음"))
+    print(f"- 원본: {data['url']}")
+
+
+def cmd_finance(args):
+    b = _one_kinder(args)
+    import kinderweb
+    data = kinderweb.get_finance(b["kindercode"], fresh=args.fresh)
+    if args.json:
+        print(json.dumps(data, ensure_ascii=False, indent=1)); return
+    print(f"# {b['kindername']} 예산·결산 추이")
+    print("※ 단위는 천원이며 재정 규모 자체를 교육 품질 점수로 환산하지 않습니다.\n")
+    print("| 구분 | 연도/차수 | 금액 |\n|---|---:|---:|")
+    for r in data.get("예산추이", []):
+        print(f"| 예산 | {r['연도차수']} | {r['예산액천원']:,} |")
+    for r in data.get("결산추이", []):
+        print(f"| 결산(수납/지출) | {r['연도']} | {r['수납액천원']:,} / {r['지출액천원']:,} |")
+    print(f"\n- 원본: {data['url']}")
+
+
+def cmd_mother_school(args):
+    b = _one_kinder(args)
+    if not is_annex(b):
+        sys.exit("[안내] 초등학교 병설유치원만 모초등학교 정보를 연결합니다.")
+    import schoolinfo
+    data = schoolinfo.context(b, get_setting("SCHOOLINFO_API_KEY"),
+                              year=args.year or current_school_year(), fresh=args.fresh)
+    if not data:
+        sys.exit("[안내] 이름·주소가 일치하는 모초등학교를 찾지 못했습니다.")
+    if args.json:
+        print(json.dumps(data, ensure_ascii=False, indent=1)); return
+    print(f"# {b['kindername']} — 모초등학교 보조정보")
+    print(f"⚠ 아래 내용은 유치원 자체가 아니라 **{data['school']['SCHUL_NM']}**의 "
+          f"{data['year']}년 학교알리미 공시입니다.\n")
+    for line in extended_lines(b, {"mother_school": data}):
+        print(line)
+    health = (data.get("health") or [None])[0]
+    if health:
+        print(f"- 보건실 평균 이용 학생: 주당 {health.get('WIK_AVRG_IFRMA_UTILZ_STDNT_FGR') or '-'}명")
+    building = (data.get("building") or [None])[0]
+    if building:
+        print(f"- 교실·화장실: 일반교실 {building.get('COL_1') or '-'}실 · "
+              f"남자화장실 {building.get('ML_TOI_FGR') or '-'} · 여자화장실 {building.get('FML_TOI_FGR') or '-'}")
+
+
+def cmd_traffic(args):
+    b = _one_kinder(args)
+    if not home_coords():
+        sys.exit("[오류] 집 위치가 없습니다. 먼저 home <네이버지도 공유 링크>로 설정하세요.")
+    import traffic_safety
+    data = traffic_safety.analyze(home_coords(), coords_of(b), fresh=args.fresh,
+                                  recent_years=args.years)
+    if args.json:
+        print(json.dumps(data, ensure_ascii=False, indent=1)); return
+    print(f"# {b['kindername']} 자차 경로 교통안전")
+    minute_text = f"{data['minutes']:.1f}분" if data["minutes"] < 1 else f"{data['minutes']:.0f}분"
+    print(f"- 자차 경로: {data['road_km']:.2f}km / {minute_text} "
+          "(OSRM, 실시간 교통 미반영)")
+    print(f"- 경로가 통과하는 공식 사고다발지: **{len(data['route_hits'])}곳**")
+    print(f"- 유치원 출입구가 포함된 공식 사고다발지: **{len(data['entrance_hits'])}곳**")
+    for hit in data["route_hits"]:
+        print(f"  - {hit['year']} {hit['name']} — 사고 {hit['accidents']}건, "
+              f"사상자 {hit['casualties']}명 ({hit['kind']})")
+    print(f"- 자료연도: {min(data['years'])}~{max(data['years'])}")
+    print("- ⚠ 0곳은 안전 판정이 아니라 도로교통공단의 공식 사고다발지 선정 기준에 "
+          "해당하는 구간이 확인되지 않았다는 뜻입니다.")
+
+
+def cmd_bus(args):
+    b = _one_kinder(args)
+    import schoolbus
+    data = schoolbus.query(b.get("kindername"), b.get("addr"), b.get("_sido"),
+                           fresh=args.fresh)
+    api_rows = rows_for_kinder("schoolBus", b, fresh=args.fresh)
+    api_row = api_rows[0] if api_rows else None
+    out = {"school_safety": data, "kindergarten_api": api_row,
+           "crosscheck": bus_crosscheck(data, api_row)}
+    if args.json:
+        print(json.dumps(out, ensure_ascii=False, indent=1)); return
+    print(f"# {b['kindername']} 통학버스 교차확인")
+    print(f"- 판정: **{out['crosscheck']}**")
+    if data.get("status"):
+        print(f"- 학교안전지원시스템: {data['status']} (없음이 아니라 조회 결과 상태)")
+    elif data.get("error"):
+        print(f"- 학교안전지원시스템 조회 실패: {data['error']}")
+    else:
+        print(f"- 학교안전지원시스템 등록차량: {data.get('vehicle_count', 0)}대")
+        print("- 차량 규모: " + " · ".join(f"{k} {v}대" for k, v in (data.get("vehicle_sizes") or {}).items()))
+        print("- 운행 형태: " + " · ".join(f"{k} {v}대" for k, v in (data.get("ownership") or {}).items()))
+        print("- 운전자 교육: " + " · ".join(f"{k} {v}명" for k, v in (data.get("driver_training") or {}).items()))
+        print("- 동승자 교육: " + " · ".join(f"{k} {v}명" for k, v in (data.get("companion_training") or {}).items()))
+        print("- 동승자 고용형태: " + " · ".join(f"{k} {v}명" for k, v in (data.get("companion_employment") or {}).items()))
+    if api_row:
+        print(f"- 유치원알리미: {'운행' if api_row.get('vhcl_oprn_yn') == 'Y' else '미운행'} · "
+              f"운행 {to_int(api_row.get('opra_vhcnt')) or 0}대 · 신고 {to_int(api_row.get('dclr_vhcnt')) or 0}대")
+    print("- 차량번호와 개인 이름은 개인정보 보호를 위해 표시하지 않습니다.")
+
+
+def cmd_bus_import(args):
+    import schoolbus
+    data = schoolbus.import_xlsx(args.path)
+    print(f"통학버스 엑셀을 가져왔습니다: {data['row_count']}개 유치원 · "
+          f"{data['imported_at']} · SHA-256 {data['sha256'][:12]}…")
+    print("자동 조회가 실패할 때만 이 자료를 보조로 사용합니다.")
+
+
+def cmd_bus_status(args):
+    import schoolbus
+    print(json.dumps(schoolbus.status(), ensure_ascii=False, indent=1))
+
+
+def cmd_sources(args):
+    import schoolbus, traffic_safety
+    data = {
+        "settings": {"KINDER_API_KEY": bool(get_setting("KINDER_API_KEY")),
+                     "NEIS_API_KEY": bool(get_setting("NEIS_API_KEY")),
+                     "SCHOOLINFO_API_KEY": bool(get_setting("SCHOOLINFO_API_KEY")),
+                     "HOME_LATLNG": bool(home_coords()),
+                     "CHILD_BIRTH_YM": bool(get_setting("CHILD_BIRTH_YM"))},
+        "traffic": traffic_safety.status(), "schoolbus": schoolbus.status(),
+        "web_disclosure": {"key_required": False, "cache_days": 7}}
+    if args.json:
+        print(json.dumps(data, ensure_ascii=False, indent=1)); return
+    print("# 데이터 출처 상태")
+    for k, v in data["settings"].items(): print(f"- {k}: {'설정됨' if v else '미설정'}")
+    print("- 도로교통공단 CSV: " + " · ".join(
+        f"{v['label']} {'캐시 있음' if v['cached'] else '미수신'}" for v in data['traffic'].values()))
+    imp = data["schoolbus"].get("manual_import")
+    print(f"- 통학버스 자동 조회 캐시: {data['schoolbus']['live_cache_count']}건")
+    print("- 통학버스 수동 엑셀: " +
+          (f"{imp['source_file']} · {imp['row_count']}행 · {imp['imported_at']}" if imp else "없음"))
+
+
 # ---------------------------------------------------------------- cmd: raw
 def cmd_raw(args):
     regions = resolve_region(args.region)
@@ -2394,6 +2763,8 @@ def main():
     sp.add_argument("name", help="유치원명(부분일치) 또는 kindercode")
     sp.add_argument("--web", action="store_true",
                     help="원비·시정명령 이력을 유치원알리미 웹에서 함께 조회(수 초 추가)")
+    sp.add_argument("--extended", action="store_true",
+                    help="급식·보건·재정·교통안전·통학버스·병설 모초교까지 확장 조회")
     sp.set_defaults(func=cmd_profile)
 
     sp = sub.add_parser("compare", help="여러 유치원 비교표")
@@ -2415,6 +2786,8 @@ def main():
                     help="충원율·근속 추이 생략(빠르게)")
     sp.add_argument("--questions", action="store_true",
                     help="요청할 때만 방문·전화 확인 질문 목록 추가")
+    sp.add_argument("--extended", action="store_true",
+                    help="급식·보건·재정·교통안전·통학버스·병설 모초교까지 포함")
     sp.set_defaults(func=cmd_report)
 
     sp = sub.add_parser("hours",
@@ -2472,12 +2845,55 @@ def main():
     sp.set_defaults(func=cmd_regions)
 
     sp = sub.add_parser("refresh", help="캐시를 비워 최신 공시를 새로 받게 함")
+    sp.add_argument("--source", choices=["traffic", "bus", "schoolinfo"],
+                    help="특정 출처만 갱신")
+    sp.add_argument("--all", action="store_true", help="모든 동적 출처를 함께 갱신")
     sp.set_defaults(func=cmd_refresh)
 
     sp = sub.add_parser("home", help="집 좌표 설정 — 네이버지도 공유 링크를 붙여넣기")
     sp.add_argument("link", nargs="?", help="네이버지도 공유 링크 (naver.me/... 등)")
     sp.add_argument("--show", action="store_true", help="현재 집 좌표 보기")
     sp.set_defaults(func=cmd_home)
+
+    sp = sub.add_parser("health", help="유치원 급식·보건·환경 웹 공시")
+    add_common(sp)
+    sp.add_argument("name", help="유치원명")
+    sp.add_argument("--year", type=int, help="식단표 연도")
+    sp.add_argument("--month", type=int, choices=range(1, 13), help="식단표 월")
+    sp.set_defaults(func=cmd_health)
+
+    sp = sub.add_parser("finance", help="유치원 예산·결산 추이")
+    add_common(sp)
+    sp.add_argument("name", help="유치원명")
+    sp.set_defaults(func=cmd_finance)
+
+    sp = sub.add_parser("mother-school", help="병설유치원 모초등학교 학교알리미 보조정보")
+    add_common(sp)
+    sp.add_argument("name", help="병설유치원명")
+    sp.add_argument("--year", type=int, help="공시연도")
+    sp.set_defaults(func=cmd_mother_school)
+
+    sp = sub.add_parser("traffic", help="실제 자차 경로와 어린이 사고다발지 폴리곤 교차")
+    add_common(sp)
+    sp.add_argument("name", help="유치원명")
+    sp.add_argument("--years", type=int, default=5, help="최근 자료연도 수(기본 5)")
+    sp.set_defaults(func=cmd_traffic)
+
+    sp = sub.add_parser("bus", help="통학버스 공개 등록현황과 유치원알리미 교차확인")
+    add_common(sp)
+    sp.add_argument("name", help="유치원명")
+    sp.set_defaults(func=cmd_bus)
+
+    sp = sub.add_parser("bus-import", help="학교안전지원시스템 통학버스 엑셀 비상 가져오기")
+    sp.add_argument("path", help="다운로드한 XLSX 경로")
+    sp.set_defaults(func=cmd_bus_import)
+
+    sp = sub.add_parser("bus-status", help="통학버스 자동 캐시·수동 엑셀 상태")
+    sp.set_defaults(func=cmd_bus_status)
+
+    sp = sub.add_parser("sources", help="API 키·자동 갱신·수동 자료 상태")
+    sp.add_argument("--json", action="store_true", help="JSON 출력")
+    sp.set_defaults(func=cmd_sources)
 
     args = p.parse_args()
     try:

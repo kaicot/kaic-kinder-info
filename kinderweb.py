@@ -38,6 +38,8 @@ PAGES = {
     "operate": ("kinderOperate", "유치원 평가"),
     "classes": ("kinderChildAndStaff", "연령별 학급 현황"),
     "hours": ("kinderEducateAndCare", "교육과정 운영시간"),
+    "sanitation": ("kinderSanitation", "식중독 발생 및 처리현황"),
+    "finance": ("kinderRevAndExp", "예결산"),
 }
 TIMEOUT = 25
 CACHE_DAYS = 7
@@ -510,9 +512,146 @@ def get_hours(itt_id, fresh=False):
     return out
 
 
+# ---------------------------------------------------------- 급식·보건·환경
+def _simple_status(grid, title):
+    if not grid or len(grid) < 2:
+        raise ParseChanged(f"'{title}' 표를 읽지 못했습니다")
+    return {grid[0][i]: (grid[1][i] if i < len(grid[1]) else "")
+            for i in range(len(grid[0])) if grid[0][i]}
+
+
+def _paired_status(grid, title):
+    if not grid:
+        raise ParseChanged(f"'{title}' 표를 읽지 못했습니다")
+    out = {}
+    for row in grid:
+        for i in range(0, len(row) - 1, 2):
+            if row[i]:
+                out[row[i]] = row[i + 1]
+    if not out:
+        raise ParseChanged(f"'{title}' 항목을 읽지 못했습니다")
+    return out
+
+
+def parse_sanitation(html):
+    blocks = tables_of(html)
+    wanted = {
+        "식중독": "식중독 발생 및 처리현황",
+        "실내공기질": "실내 공기질 관리 현황",
+        "소독": "정기 소독관리 현황",
+        "음용수": "음용수 종류 및 수질 검사 현황",
+        "미세먼지": "미세먼지 관리 현황",
+        "조도": "조도 관리 현황",
+    }
+    out = {}
+    for key, title in wanted.items():
+        grid = _find_grid(blocks, title)
+        if grid is None:
+            raise ParseChanged(f"'{title}' 표를 찾지 못했습니다")
+        out[key] = (_paired_status(grid, title) if key == "음용수"
+                    else _simple_status(grid, title))
+    out["기준"] = _basis(html)
+    return out
+
+
+def _meal_files(itt_id, year, month):
+    data = urllib.parse.urlencode({"id": itt_id, "year": str(year),
+                                   "month": f"{int(month):02d}"}).encode("utf-8")
+    req = urllib.request.Request(
+        BASE + "/code/findCartInfo.do", data=data,
+        headers={"User-Agent": "Mozilla/5.0 (kaic-kinder-info)",
+                 "Referer": page_url("sanitation", itt_id),
+                 "Content-Type": "application/x-www-form-urlencoded"})
+    try:
+        with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+            rows = json.loads(r.read().decode("utf-8"))
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+        return []
+    return [{"파일명": r.get("fileName") or r.get("originalFileName") or "식단표",
+             "확장자": r.get("fileExtensionName"), "pdf": r.get("pdfYn") == "Y"}
+            for r in rows if isinstance(r, dict)]
+
+
+def get_sanitation(itt_id, year=None, month=None, fresh=False):
+    now = datetime.now()
+    out = parse_sanitation(fetch("sanitation", itt_id, fresh=fresh))
+    out["식단표"] = _meal_files(itt_id, year or now.year, month or now.month)
+    out["식단연월"] = f"{year or now.year}-{int(month or now.month):02d}"
+    out["url"] = page_url("sanitation", itt_id)
+    return out
+
+
+# ---------------------------------------------------------------- 재정
+def parse_finance(html):
+    blocks = [(h, g) for h, g in tables_of(html) if "예결산" in h]
+    budget_grid = next((g for _h, g in blocks if g and g[0] == ["연도", "예산액"]), None)
+    actual_grid = next((g for _h, g in blocks
+                        if g and g[0] == ["연도", "수납액", "지출액"]), None)
+    if budget_grid is None or actual_grid is None:
+        # 공립 병설은 사립과 다른 회계 화면을 쓴다. 표 본문은 상세
+        # 세입·세출 항목이고, 여러 해 총액은 화면의 공식 차트 자료에
+        # 들어 있으므로 변수 이름까지 함께 확인해 읽는다.
+        line = re.search(
+            r"function\s+drawLineChart\s*\(\)\s*\{.*?"
+            r"var\s+data\s*=\s*\[([^]]*)\].*?"
+            r"var\s+pbntData\s*=\s*\[([^]]*)\]",
+            html, re.S)
+        bar = re.search(
+            r"function\s+drawBarChar\s*\(\)\s*\{.*?"
+            r"var\s+received\s*=\s*\[([^]]*)\].*?"
+            r"var\s+savings\s*=\s*\[([^]]*)\].*?"
+            r"var\s+years\s*=\s*\[([^]]*)\]",
+            html, re.S)
+
+        def js_ints(raw):
+            return [int(v) for v in re.findall(r"-?\d+", raw)]
+
+        if not line:
+            raise ParseChanged("예산·결산 추이 표와 차트 자료를 찾지 못했습니다")
+        budget_values, budget_periods = js_ints(line.group(1)), js_ints(line.group(2))
+        if not budget_values or len(budget_values) != len(budget_periods):
+            raise ParseChanged("공립 예산 차트의 연도와 값 개수가 맞지 않습니다")
+        budgets = [{"연도차수": p, "예산액천원": v}
+                   for p, v in zip(budget_periods, budget_values)]
+        actuals = []
+        if bar:
+            received, spent, years = (js_ints(bar.group(i)) for i in range(1, 4))
+            if not (len(received) == len(spent) == len(years)):
+                raise ParseChanged("공립 결산 차트의 연도와 값 개수가 맞지 않습니다")
+            actuals = [{"연도": y, "수납액천원": a, "지출액천원": b}
+                       for y, a, b in zip(years, received, spent)]
+        return {"예산추이": budgets, "결산추이": actuals, "단위": "천원",
+                "기준": _basis(html)}
+
+    def rows(grid, fields):
+        out = []
+        for r in grid[1:]:
+            if len(r) < len(fields):
+                continue
+            nums = [_num(v) for v in r[:len(fields)]]
+            if nums[0] is None:
+                continue
+            out.append(dict(zip(fields, nums)))
+        return out
+
+    budgets = rows(budget_grid, ("연도차수", "예산액천원"))
+    actuals = rows(actual_grid, ("연도", "수납액천원", "지출액천원"))
+    if not budgets:
+        raise ParseChanged("예산 추이가 숫자로 읽히지 않습니다")
+    return {"예산추이": budgets, "결산추이": actuals, "단위": "천원",
+            "기준": _basis(html)}
+
+
+def get_finance(itt_id, fresh=False):
+    out = parse_finance(fetch("finance", itt_id, fresh=fresh))
+    out["url"] = page_url("finance", itt_id)
+    return out
+
+
 # ---------------------------------------------------------------- selftest
 # 자가진단 표본: 서울 강남구의 실제 유치원 1곳(공개 공시 데이터).
 SELFTEST_ID = "34140010-58e8-44b4-9e91-49d5eb6669e1"   # 강남유정유치원
+SELFTEST_PUBLIC_ID = "dd4b3942-3917-4335-a2f6-fdef2c492584"  # 공립 병설 표본
 
 
 def selftest(itt_id=SELFTEST_ID, verbose=True):
@@ -523,6 +662,10 @@ def selftest(itt_id=SELFTEST_ID, verbose=True):
         ("유치원 평가 표 파싱", lambda: parse_evaluation(fetch("operate", itt_id, fresh=True))),
         ("연령별 학급 표 파싱", lambda: parse_age_classes(fetch("classes", itt_id, fresh=True))),
         ("운영시간 표 파싱", lambda: parse_hours(fetch("hours", itt_id, fresh=True))),
+        ("급식·보건·환경 표 파싱", lambda: parse_sanitation(fetch("sanitation", itt_id, fresh=True))),
+        ("예산·결산 추이 파싱", lambda: parse_finance(fetch("finance", itt_id, fresh=True))),
+        ("공립 예산·결산 차트 파싱", lambda: parse_finance(
+            fetch("finance", SELFTEST_PUBLIC_ID, fresh=True))),
     ]
     ok = True
     for name, fn in checks:

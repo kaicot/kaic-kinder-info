@@ -23,11 +23,13 @@
 |---|---|---|---|
 | `KINDER_API_KEY` | **필수** | [유치원알리미 → 자료실 → OPEN API](https://e-childschoolinfo.moe.go.kr/openApi/openApiIntro.do) (자동승인) | 검색·비교·종합 리포트 (공시 14개 항목) |
 | `NEIS_API_KEY` | 선택 | [NEIS 교육정보 개방 포털](https://open.neis.go.kr) (무료) | 병설유치원 방학·급식 (`schedule`) |
+| `SCHOOLINFO_API_KEY` | 선택 | [학교알리미 Open API](https://www.schoolinfo.go.kr/ng/go/pnnggo_a01_m0.do) | 병설유치원 모초등학교 급식·보건·시설안전 (`mother-school`) |
 | `HOME_LATLNG` | 선택 | **네이버지도 [공유] 링크**를 `kinderinfo.py home "링크"` 에 넘기면 자동 저장 | 거리 필터(`--near`), 자차 경로(`--road`) |
 | `CHILD_BIRTH_YM` | 선택 | 직접 입력 (YYYY-MM) | 입학 연령반 자동 계산 (`--target`) |
 
-**키가 아예 필요 없는 기능**: 혼합반 세부 연령 구성, 원비·시정명령·운영시간 조회
-(`search --age`, `profile --web`, `hours`), 로드뷰·지도 링크.
+**키가 아예 필요 없는 기능**: 혼합반 세부 연령 구성, 원비·시정명령·운영시간·
+보건환경·재정 조회, 도로교통공단 사고다발지와 자차 경로 분석, 통학버스 공개 등록현황
+(`profile --web`, `health`, `finance`, `traffic`, `bus`), 로드뷰·지도 링크.
 유치원알리미 웹 공시 화면을 직접 읽기 때문입니다.
 
 ## 빠른 시작
@@ -71,6 +73,13 @@ python kinderinfo.py profile "서울 강남구" 강남유정
 # 전용·혼합 학급 구성, 원비·시정명령 이력까지 (웹 공시, 키 불필요)
 python kinderinfo.py profile "서울 강남구" 강남유정 --web
 
+# 보건·재정·자차 경로 안전·통학버스까지 확장
+python kinderinfo.py profile "서울 강남구" 강남유정 --extended
+python kinderinfo.py health "서울 강남구" 강남유정
+python kinderinfo.py finance "서울 강남구" 강남유정
+python kinderinfo.py traffic "서울 강남구" 강남유정
+python kinderinfo.py bus "서울 강남구" 강남유정
+
 # 여러 곳 비교표
 python kinderinfo.py compare "서울 강남구" "강남유정,개현초등학교병설"
 
@@ -94,6 +103,19 @@ python kinderinfo.py refresh
 # 병설유치원의 방학이 언제 며칠인지 (NEIS 키 필요)
 python kinderinfo.py schedule "서울 강남구" ○○초등학교병설
 python kinderinfo.py schedule "서울 강남구" ○○초등학교병설 --meals
+
+# 병설유치원의 모초등학교 학교알리미 보조정보
+python kinderinfo.py mother-school "서울 강남구" ○○초등학교병설 --year 2026
+
+# 출처 상태와 선택적 갱신
+python kinderinfo.py sources
+python kinderinfo.py refresh --source traffic
+python kinderinfo.py refresh --source bus
+python kinderinfo.py refresh --all
+
+# 통학버스 사이트 자동 조회 장애 때만: 내려받은 엑셀을 비상 자료로 가져오기
+python kinderinfo.py bus-import "통학버스_운행정보.xlsx"
+python kinderinfo.py bus-status
 
 # 원본 JSON / 저장된 지역 / 새 지역 코드 탐색
 python kinderinfo.py raw basicInfo2 11680
@@ -144,6 +166,50 @@ Open API는 `만3세 전용반 0학급`과 `혼합반 3학급`까지만 주며, 
 
 원비·시정명령·유치원 평가(웹 공시)와 병설 방학 실측(NEIS 키 있을 때)이 기본 포함되며,
 `--no-web`으로 웹 조회를 끄면 빨라집니다. `--out 파일.md`로 저장할 수 있습니다.
+`--extended`를 붙이면 보건·환경, 예산·결산, 실제 자차 경로 사고다발지, 통학버스
+교차확인과 병설 모초등학교 보조정보까지 포함합니다. **질문 목록은 여전히
+`--questions`를 명시한 경우에만** 생성합니다.
+
+### 확장 출처 — 무엇을 어디서 가져오나
+
+| 출처 | 키 | 갱신 | 역할과 한계 |
+|---|---|---|---|
+| 유치원알리미 Open API | 필수 | 공시 캐시 7일 | 기본현황·학급·시설·수업일수·통학차량 등 핵심 14종 |
+| 유치원알리미 웹 공시 | 없음 | 7일 | 혼합반·원비·시정명령·운영시간·보건환경·재정. 화면 개편 시 파서가 명시적으로 중단 |
+| NEIS | 선택 | 호출 시 | 병설 모초등학교 학사일정·급식. 유치원 확정 일정은 아님 |
+| 학교알리미 | 선택 | 30일 | 병설 모초등학교 급식·보건·시설안전. **유치원 자체 정보가 아님** |
+| 도로교통공단 공식 CSV | 없음 | 30일 자동 | 어린이 보행·스쿨존 사고다발지 공식 폴리곤 |
+| OSRM/OpenStreetMap | 없음 | 경로 영구 캐시 | 실제 자차 도로 경로·시간. 실시간 교통 미반영 |
+| 학교안전지원시스템 | 없음 | 7일 | 통학버스 차량 수·규모·직영/계약·교육 이수. 노선은 제공하지 않음 |
+
+학교알리미는 2026년 이후 신규 발급 키에서 `sidoCode`·`sggCode`가 필수이고,
+공시항목은 `pbanYr`도 필요합니다. 도구가 유치원의 지역·공시연도를 자동으로 전달합니다.
+
+### 자차 경로의 어린이 교통사고 다발지 (`traffic`)
+
+접근성과 교통안전 판단에는 직선 반경을 사용하지 않습니다. 집에서 유치원까지 OSRM이
+반환한 **전체 자차 경로 GeoJSON**과 도로교통공단 공식 CSV의 사고다발지 폴리곤을
+교차시켜 다음을 확인합니다.
+
+- 유치원 출입구 좌표가 공식 사고다발지 폴리곤 안에 있는가
+- 실제 자차 경로가 공식 사고다발지 폴리곤을 통과하는가
+- 도로거리·예상시간·해당 자료연도·경로상 다발지 수
+
+직선 좌표는 경로 요청 대상을 줄이는 내부 최적화에만 쓰며 결과 정렬·안전 판단에는
+사용하지 않습니다. **0곳은 안전하다는 뜻이 아니라**, 도로교통공단이 정한 사고다발지
+선정 기준에 해당하는 구간이 확인되지 않았다는 뜻입니다. 실시간 교통은 반영하지 않습니다.
+
+### 통학버스 자동 확인과 엑셀 비상 자료 (`bus`)
+
+`bus`는 학교안전지원시스템 공개 화면에서 유치원명과 주소를 대조한 뒤 등록차량 수,
+차량 규모, 직영·계약 여부, 운전자·동승자 교육과 고용형태를 읽고 유치원알리미와
+교차확인합니다. 차량번호와 운영자 이름은 기본 출력에서 제거합니다.
+
+자동 조회가 막힌 경우에만 학교안전지원시스템에서 내려받은 엑셀을 업로드해
+`bus-import`로 가져옵니다. 가져온 시각·파일 해시·행 수를 기록하고, 파일 내부 수정일을
+자료 기준일로 오인하지 않습니다. 초보자는 파일을 대화에 첨부하고 “통학버스 자료를
+업데이트해줘”라고 하면 에이전트가 가져오기와 검증을 대신 수행하도록 AGENTS.md에
+절차를 적었습니다. 한쪽 출처에 없다는 사실만으로 “통학버스 없음”이라고 단정하지 않습니다.
 
 ### 실제 운영시간 비교 (`hours`)
 
@@ -238,8 +304,9 @@ python kinderinfo.py search "서울 강남구" --target --near 1.5 --road --sort
 직선거리가 똑같아 보이던 A와 B가 실제로는 두 배 가까이 차이납니다. 우회율이 2배를 넘으면
 ⚠가 붙습니다. 사용자가 확인 질문을 원해 `report --questions`를 쓴 경우에만 동선 질문이 추가됩니다.
 
-도로 조회는 직선거리로 넉넉히 거른 뒤 남은 곳만 부르고, 한 번 조회한 경로는 영구 캐시합니다
-(집·유치원 위치는 바뀌지 않으므로). **실시간 교통은 반영되지 않습니다** — 아침 등원
+도로거리 필터·정렬·교통안전 결과는 모두 OSRM의 실제 자차 경로를 기준으로 합니다.
+좌표 간 하한값은 서버 호출량을 줄이는 내부 최적화에만 쓰고 사용자 판단값으로 쓰지 않습니다.
+한 번 조회한 경로는 영구 캐시합니다(집·유치원 위치는 바뀌지 않으므로). **실시간 교통은 반영되지 않습니다** — 아침 등원
 시간대에는 더 걸리고, 한국 도로망은 OpenStreetMap 기반이라 일방통행·골목의 최신성이
 상용 지도보다 떨어질 수 있습니다.
 
@@ -319,9 +386,11 @@ codex mcp add kaic-kinder-info -- "<파이썬 절대경로>" "<저장소 경로>
 > **`python`이라고만 쓰지 마세요.** Windows에서는 Microsoft Store 스텁으로 잡혀
 > `CONNECTION_CLOSED`로 실패합니다. `where python` / `which python3`로 절대 경로를 확인해 쓰세요.
 
-노출되는 도구(13종): `search_kindergartens`, `kindergarten_profile`, `compare_kindergartens`,
+노출되는 도구(18종): `search_kindergartens`, `kindergarten_profile`, `compare_kindergartens`,
 `kindergarten_schedule`, `kindergarten_report`, `kindergarten_hours`, `kindergarten_trend`, `kindergarten_diff`,
-`save_shortlist`, `set_home_location`, `raw_data`, `list_regions`, `discover_region`
+`kindergarten_bus`, `kindergarten_traffic_safety`, `annex_school_context`,
+`kindergarten_extended_disclosure`, `kindergarten_source_status`, `save_shortlist`,
+`set_home_location`, `raw_data`, `list_regions`, `discover_region`
 — CLI의 모든 기능을 대화로 쓸 수 있습니다. 후보를 저장해 두면
 "내 후보 추이 보여줘", "브리핑 다시 만들어줘"가 인자 없이 동작합니다.
 
@@ -350,6 +419,7 @@ python sync_skill.py
 
 - 파이썬 3.9 이상 (표준 라이브러리만 사용)
 - 유치원알리미 Open API 인증키
+- 병설 모초등학교 학교알리미 기능을 쓸 경우에만 학교알리미 키
 - MCP 서버를 쓸 경우에만 `mcp` 패키지
 
 ## 문서
