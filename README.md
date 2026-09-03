@@ -51,6 +51,23 @@ python kinderinfo.py search 11680 --limit 3 --fresh   # 서울 강남구로 동�
 > **AI 에이전트에게 맡겨도 됩니다.** Claude Code나 Codex에 이 저장소 주소를 주고
 > "이거 설치해줘"라고 하면 [AGENTS.md](AGENTS.md)를 읽고 단계별로 안내해 줍니다.
 
+### Python 프로젝트에서 재사용
+
+YOUWON 같은 별도 수집기에서는 CLI 출력 문자열을 파싱하지 말고 안정적인 공개 모듈을 사용하세요.
+
+```bash
+python -m pip install -e .
+kinderinfo --version
+```
+
+```python
+import kaic_kinder_core as kinder
+
+age = kinder.age_class_for(2023, 2027)
+```
+
+기존 `python kinderinfo.py ...` 실행법과 MCP 등록 방식도 그대로 동작합니다.
+
 ## 사용법
 
 ```bash

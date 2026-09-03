@@ -18,6 +18,8 @@ sgg_codes.json
 
 # ── 파이썬 ───────────────────────────────────────────────────
 __pycache__/
+build/
+*.egg-info/
 *.py[cod]
 *.egg-info/
 .venv/

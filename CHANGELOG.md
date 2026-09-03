@@ -3,6 +3,19 @@
 이 프로젝트는 [유의적 버전](https://semver.org/lang/ko/)을 따릅니다.
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/)를 따릅니다.
 
+## [1.11.0] - 2026-09-03
+
+### Added
+
+- `pyproject.toml` — 기존 단일 파일 CLI를 이동하지 않고 설치 가능한 Python 패키지로 제공한다.
+- `kaic_kinder_core.py` — YOUWON 수집기 등 외부 Python 소비자를 위한 안정적인 공개 진입점.
+- `tests/test_core_contracts.py` — 입학연령 계산, 파생지표, 방과후·등원일수와 거리 계산 계약 테스트.
+
+### Changed
+
+- `pip install -e .` 뒤 `kinderinfo` 명령으로도 CLI를 실행할 수 있다.
+- 기존 `python kinderinfo.py ...`와 MCP 등록 방식은 그대로 호환한다.
+
 ## [1.10.0] - 2026-09-02
 
 **유치원 자체 공시를 넘어 병설 모초교·자차 경로 안전·통학버스 등록을 출처별로 교차한다.**

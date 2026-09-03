@@ -295,6 +295,9 @@ API 원본 응답을 직접 확인하세요.
 | 파일 | 역할 |
 |---|---|
 | `kinderinfo.py` | 핵심 CLI. 공식 Open API 조회와 명령 전부 |
+| `kaic_kinder_core.py` | YOUWON 수집기 등 외부 Python 소비자를 위한 안정적인 공개 진입점 |
+| `pyproject.toml` | 설치형 패키지 메타데이터와 `kinderinfo` 명령 등록 |
+| `tests/test_core_contracts.py` | 입학연령·핵심 파생지표의 호환성 계약 테스트 |
 | `neis.py` | NEIS 연동(병설유치원 방학·급식). 실패해도 본체와 무관 |
 | `kinderweb.py` | 유치원알리미 웹 공시 조회(연령별 학급·원비·시정명령·평가·운영시간). 키 불필요, 7일 캐시, 실패해도 본체와 무관 |
 | `verified_hours.py` | 공식 계획서에서 사람이 검증한 세부 운영시간의 로컬 저장·검산. 실제 `verified_hours.json`은 gitignore |
@@ -320,10 +323,11 @@ API 원본 응답을 직접 확인하세요.
 
 ### 검증
 
-변경 후 최소한 이 네 개는 돌려보세요.
+변경 후 최소한 아래 검사를 돌려보세요.
 
 ```bash
 python kinderinfo.py --version
+python -m unittest discover -s tests -v
 python kinderinfo.py search 11680 --limit 3 --fresh    # API 왕복 확인
 python kinderinfo.py profile 11680 강남유정             # 14개 항목 파싱 확인
 python kinderweb.py selftest                           # 웹 공시 파서 8종 확인(사립·공립 회계 포함)
