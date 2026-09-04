@@ -1,6 +1,7 @@
 import math
 import unittest
 from datetime import datetime
+from unittest.mock import patch
 
 import kaic_kinder_core as core
 
@@ -50,6 +51,35 @@ class MetricTests(unittest.TestCase):
     def test_distance_contract(self):
         km = core.haversine_km((37.5665, 126.9780), (37.5665, 126.9780))
         self.assertTrue(math.isclose(km, 0.0, abs_tol=1e-9))
+
+
+class RegionalCollectionTests(unittest.TestCase):
+    def test_each_endpoint_is_fetched_once_per_region(self):
+        basics = [
+            {"kindercode": "a", "kindername": "가유치원"},
+            {"kindercode": "b", "kindername": "나유치원"},
+        ]
+        calls = []
+
+        def fake_fetch(endpoint, sido, sgg, fresh=False):
+            calls.append((endpoint, sido, sgg, fresh))
+            if endpoint == "basicInfo2":
+                return [dict(row) for row in basics]
+            return [
+                {"kindercode": "a", "kindername": "가유치원", "value": endpoint},
+                {"kindercode": "b", "kindername": "나유치원", "value": endpoint},
+            ]
+
+        with patch("kinderinfo.fetch", side_effect=fake_fetch):
+            records = core.collect_region("11", "11140", "서울 중구", fresh=True)
+
+        expected = 1 + len(core._impl.PROFILE_SECTIONS)
+        self.assertEqual(len(calls), expected)
+        self.assertEqual(len(set(endpoint for endpoint, *_ in calls)), expected)
+        self.assertTrue(all(call[3] for call in calls))
+        self.assertEqual(len(records), 2)
+        self.assertEqual(records[0][0]["_sgg_name"], "서울 중구")
+        self.assertEqual(records[1][1]["schoolBus"][0]["kindercode"], "b")
 
 
 if __name__ == "__main__":

@@ -64,6 +64,10 @@ kinderinfo --version
 import kaic_kinder_core as kinder
 
 age = kinder.age_class_for(2023, 2027)
+
+# 예약 수집기는 지역 단위 함수로 API 중복 호출을 방지한다.
+for basic, sections in kinder.collect_region("11", "11680", "서울 강남구"):
+    pass
 ```
 
 기존 `python kinderinfo.py ...` 실행법과 MCP 등록 방식도 그대로 동작합니다.

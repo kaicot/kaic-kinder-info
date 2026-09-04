@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kaic-kinder-info"
-version = "1.11.0"
+version = "1.12.0"
 description = "유치원알리미 공공데이터 기반 유치원 검색·비교 도구"
 readme = "README.md"
 requires-python = ">=3.9"
