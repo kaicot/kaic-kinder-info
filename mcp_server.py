@@ -32,6 +32,7 @@ mcp = FastMCP(
         f"유치원알리미(교육부) 공시 데이터 조회 도구 v{kinderinfo.__version__}. "
         "지역별 유치원 검색, 1곳 종합 리포트, 여러 곳 비교표를 마크다운으로 돌려준다. "
         "원비·연령별 혼합반 구성·시정명령은 웹 공시로 확인할 수 있다. "
+        "최신 자료를 요청하면 검색·상세 조회의 fresh=True를 사용하고 공시 기준 시점을 함께 설명할 것. "
         "모집요강·경쟁률은 데이터에 없으므로 지어내지 말 것."),
 )
 _lock = threading.Lock()  # redirect_stdout 이 전역이라 동시 호출 직렬화
@@ -68,7 +69,7 @@ def _run(*argv: str) -> str:
 def search_kindergartens(region: str, age: int = 0, target: bool = False,
                          estab: str = "", name: str = "", near_km: float = 0,
                          road: bool = False, sort: str = "name",
-                         no_web: bool = False) -> str:
+                         no_web: bool = False, fresh: bool = False) -> str:
     """지역별 유치원 검색 — 학급/원아/정원/충원율/운영시간을 마크다운 표로 반환.
 
     Args:
@@ -84,6 +85,8 @@ def search_kindergartens(region: str, age: int = 0, target: bool = False,
               | 'dist'(가까운 순 — road=True면 도로 거리 기준)
         no_web: True면 혼합반의 세부 연령 구성을 확인하지 않고 '미확인' 후보로 포함.
                 기본 False가 정확하며, 빠른 임시 검색에만 True 사용
+        fresh: True면 CLI의 --fresh로 조회 캐시를 건너뛰고 공시 자료를 다시 받음.
+               최신 조회 요청 때 사용. 원본 공시의 기준 시점 자체가 바뀌는 것은 아님
     """
     args = ["search", region, "--sort", sort]
     if target:
@@ -100,12 +103,14 @@ def search_kindergartens(region: str, age: int = 0, target: bool = False,
         args += ["--estab", estab]
     if name:
         args += ["--name", name]
+    if fresh:
+        args.append("--fresh")
     return _run(*args)
 
 
 @mcp.tool()
 def kindergarten_profile(region: str, name: str, web: bool = False,
-                         extended: bool = False) -> str:
+                         extended: bool = False, fresh: bool = False) -> str:
     """유치원 1곳의 전체 공시 항목 종합 리포트(기본현황·건물·수업일수·교사근속·
     통학차량·안전점검·CCTV·환경위생·보험·방과후 등 + 파생 지표).
 
@@ -117,12 +122,16 @@ def kindergarten_profile(region: str, name: str, web: bool = False,
              행정처분을 물으면 True로 호출할 것
         extended: True면 급식·보건·재정·자차 경로 사고다발지·통학버스와
                   병설 모초등학교 보조정보까지 조회
+        fresh: True면 CLI의 --fresh로 조회 캐시를 건너뛰고 공시 자료를 다시 받음.
+               web/extended와 함께 사용 가능. 공시 기준 시점은 결과에서 확인할 것
     """
     args = ["profile", region, name]
     if web:
         args.append("--web")
     if extended:
         args.append("--extended")
+    if fresh:
+        args.append("--fresh")
     return _run(*args)
 
 

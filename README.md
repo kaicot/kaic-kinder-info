@@ -412,8 +412,17 @@ codex mcp add kaic-kinder-info -- "<파이썬 절대경로>" "<저장소 경로>
 `kindergarten_bus`, `kindergarten_traffic_safety`, `annex_school_context`,
 `kindergarten_extended_disclosure`, `kindergarten_source_status`, `save_shortlist`,
 `set_home_location`, `raw_data`, `list_regions`, `discover_region`
-— CLI의 모든 기능을 대화로 쓸 수 있습니다. 후보를 저장해 두면
+후보를 저장해 두면
 "내 후보 추이 보여줘", "브리핑 다시 만들어줘"가 인자 없이 동작합니다.
+
+최신 자료를 요청할 때는 `search_kindergartens`와 `kindergarten_profile`의
+`fresh=True`로 조회 캐시를 건너뜁니다. 기본값은 `False`여서 기존 호출은 그대로 동작합니다.
+상세 조회는 `web=True`, `extended=True`와 함께 사용할 수 있습니다.
+다른 명령의 `--fresh`나 `--out` 등 MCP에 없는 옵션은 에이전트가 CLI로 실행합니다.
+자료를 다시 받아도 원본 공시의 기준 시점은 같을 수 있습니다.
+
+이 도구는 모델을 직접 호출하지 않습니다. GPT-6 Astra 등 사용할 모델은 Codex 같은
+실행 앱에서 선택하며, 별도의 OpenAI API 키나 SDK를 이 저장소에 추가할 필요는 없습니다.
 
 ### 스킬
 
