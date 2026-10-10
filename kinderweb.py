@@ -397,10 +397,14 @@ def parse_age_classes(html):
         cols[key] = col
 
     rows = {}
-    for label in ("학급 수", "정원", "현원"):
-        want = _compact(label)
+    for label, aliases in (
+        ("학급 수", ("학급 수",)),
+        ("정원", ("정원", "모집정원")),
+        ("현원", ("현원",)),
+    ):
+        wanted = {_compact(alias) for alias in aliases}
         row = next((r for r in grid[data_start:]
-                    if any(_compact(c) == want for c in r)), None)
+                    if any(_compact(c) in wanted for c in r)), None)
         if row is None:
             raise ParseChanged(f"연령별 학급 표에서 '{label}' 행을 찾지 못했습니다")
         rows[label] = row
