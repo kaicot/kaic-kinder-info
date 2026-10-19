@@ -1,6 +1,6 @@
 # kaic-kinder-info
 
-현재 버전: **1.13.1** (`kinderinfo.__version__` 기준).
+현재 버전: **1.13.3** (`kinderinfo.__version__` 기준).
 
 교육부 **유치원알리미**([e-childschoolinfo.moe.go.kr](https://e-childschoolinfo.moe.go.kr)) Open API로
 전국 유치원을 **검색·비교·심층조회**하는 명령줄 도구입니다.
@@ -438,6 +438,7 @@ python sync_skill.py
 - [명령 안내](skill/kaic-kinder-info/references/commands.md): 옵션·MCP/CLI 전환
 - [출처와 접근](skill/kaic-kinder-info/references/sources-and-access.md): 키·설정·개인정보·부분 실패
 - [해석 기준](skill/kaic-kinder-info/references/interpretation.md): 혼합반·지표·운영시간·교통
+- [입학 준비 안내](skill/kaic-kinder-info/references/admissions.md): 공식 모집 일정·유보통합포털 준비·찜하기와 신청의 차이
 
 후보 언급만으로 저장하지 않으며, 집 위치·아이 생년월·후보 저장과 보고서 파일 출력은 요청한 범위에서만 수행합니다.
 `search --target`은 다음 학년도, `hours --target`은 첫 입학 학년도 기준입니다. 지정 연령은 `--age`, 지정 학년도는 이를 지원하는 명령의 `--year`로 반영합니다.
@@ -448,9 +449,10 @@ python sync_skill.py
 - 공시 자료는 **1년에 두 번**(4월 말, 10월 말경) 갱신됩니다. 출력 상단에 `2026년 1차 공시`처럼
   기준이 표시됩니다. 원서 접수 직전에는 `--fresh`로 최신 자료를 다시 받으세요.
 - **원비는 Open API에는 없지만 웹 공시에서 조회합니다.** 모집요강·경쟁률·통학구역은
-  어떤 제공 데이터에도 없으므로 [처음학교로](https://www.go-firstschool.go.kr)나
-  유치원에 직접 확인해야 합니다.
+  이 도구의 제공 데이터에 없으므로 해당 학년도의 [유보통합포털 유치원입학](https://enter.childinfo.go.kr/)과
+  유치원 공식 안내에서 확인해야 합니다.
 - 원서 접수 일정·지원 개수·모집요강은 희망 학년도의 [유보통합포털 유치원입학](https://enter.childinfo.go.kr/) 및 유치원 공식 안내를 확인합니다. 과거 일정을 다음 학년도 확정값으로 사용하지 않습니다.
+- 스킬은 공식 입학 일정·준비 절차도 안내합니다. `pick`의 로컬 후보 저장은 포털 찜하기와 연동되지 않으며, 찜하기만으로 입학 신청이 완료되지 않습니다. 우선·일반·추가모집의 일정은 구분해 확인합니다.
 - 혼합반 정원은 포함 연령의 합계입니다. 검색 결과의 숫자를 해당 연령 모집 인원으로
   단정하지 말고 `profile --web`과 유치원 문의로 확인하세요.
 
